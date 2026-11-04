@@ -1,4 +1,4 @@
-name: Build Desktop (Windows + Linux)
+name: Build (Windows, Linux, Android)
 
 on:
   push:
@@ -7,12 +7,9 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  build:
-    name: Build (${{ matrix.platform }})
+  desktop:
+    name: Desktop (${{ matrix.platform }})
     strategy:
       fail-fast: false
       matrix:
@@ -92,11 +89,62 @@ jobs:
           path: dist-artifacts/SportsballGo-Linux-Portable.zip
           retention-days: 14
 
-      - name: Publish to the "latest" release (files with their extensions)
-        if: github.event_name != 'pull_request'
-        uses: softprops/action-gh-release@v2
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - run: npm ci
+
+      - name: Build web assets and sync into Android project
+        run: npm run android:sync
+
+      - name: Assemble debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Rename APK
+        run: |
+          mkdir -p dist-artifacts
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist-artifacts/SportsballGo-Android-debug.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SportsballGo-Android-APK
+          path: dist-artifacts/SportsballGo-Android-debug.apk
+          retention-days: 14
+
+  release:
+    name: Publish "latest" release
+    needs: [desktop, android]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-files
+          merge-multiple: true
+
+      - run: ls -l release-files
+
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: Latest build
           prerelease: true
-          files: dist-artifacts/*
+          files: release-files/*
