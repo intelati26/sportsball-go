@@ -991,6 +991,9 @@ export default function SportsballDashboard() {
     ...Object.keys(TEAM_FEEDS).flatMap((id) => (activePlugins.includes(id) ? teamFeeds[id].games : [])),
   ];
 
+  const skipTo = (id) =>
+    document.getElementById(`section-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
   const togglePlugin = (id) => {
     setActivePlugins((prev) =>
       prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]
@@ -1029,9 +1032,20 @@ export default function SportsballDashboard() {
         </button>
       </header>
 
+      <nav style={styles.skipNav} aria-label="Skip to a widget">
+        <button style={styles.skipBtn} onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
+          ↑ Top
+        </button>
+        {AVAILABLE_PLUGINS.filter((pl) => activePlugins.includes(pl.id)).map((pl) => (
+          <button key={pl.id} style={styles.skipBtn} onClick={() => skipTo(pl.id)}>
+            {pl.name}
+          </button>
+        ))}
+      </nav>
+
       <main style={styles.mainGrid}>
         {activePlugins.includes('nfl') && (
-          <section style={styles.section}>
+          <section id="section-nfl" style={styles.section}>
             <h2 style={styles.sectionTitle}>🏈 NFL Football</h2>
             <div style={styles.cardsGrid}>
               {nflGames.length > 0 ? (
@@ -1046,7 +1060,7 @@ export default function SportsballDashboard() {
         )}
 
         {activePlugins.includes('cfb') && (
-          <section style={styles.section}>
+          <section id="section-cfb" style={styles.section}>
             <h2 style={styles.sectionTitle}>🎓 College Football (CFB)</h2>
             <div style={styles.cardsGrid}>
               {cfbGames.length > 0 ? (
@@ -1063,7 +1077,7 @@ export default function SportsballDashboard() {
         {Object.keys(TEAM_FEEDS).map((id) => {
           const { games: list, loading: isLoading } = teamFeeds[id];
           return activePlugins.includes(id) ? (
-            <section key={id} style={styles.section}>
+            <section key={id} id={`section-${id}`} style={styles.section}>
               <h2 style={styles.sectionTitle}>{TEAM_FEEDS[id].icon} {TEAM_FEEDS[id].label}</h2>
               <div style={styles.cardsGrid}>
                 {list.length > 0 ? (
@@ -1082,7 +1096,7 @@ export default function SportsballDashboard() {
 
         {Object.entries(NASCAR_SERIES).map(([id, series]) =>
           activePlugins.includes(id) ? (
-            <section key={id} style={styles.section}>
+            <section key={id} id={`section-${id}`} style={styles.section}>
               <h2 style={styles.sectionTitle}>🏎️ {series.name}</h2>
               <div style={styles.cardsGrid}>
                 {nascarFeeds[id].races.length > 0 ? (
@@ -1105,7 +1119,7 @@ export default function SportsballDashboard() {
 
         {Object.entries(GOLF_TOURS).map(([id, tour]) =>
           activePlugins.includes(id) ? (
-            <section key={id} style={styles.section}>
+            <section key={id} id={`section-${id}`} style={styles.section}>
               <h2 style={styles.sectionTitle}>⛳ {tour.name}</h2>
               <div style={styles.cardsGrid}>
                 {golfFeeds[id].events.length > 0 ? (
@@ -1168,7 +1182,9 @@ const styles = {
   leaderRow: { display: 'flex', gap: '10px' },
   pluginMgrBtn: { backgroundColor: '#334155', color: '#fff', border: 'none', padding: '10px 16px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600' },
   mainGrid: { padding: '32px', display: 'flex', flexDirection: 'column', gap: '32px' },
-  section: { display: 'flex', flexDirection: 'column', gap: '16px' },
+  skipNav: { position: 'sticky', top: 0, zIndex: 50, display: 'flex', gap: '8px', overflowX: 'auto', padding: '10px 32px', backgroundColor: '#0f172a', borderBottom: '1px solid #1e293b' },
+  skipBtn: { flex: '0 0 auto', backgroundColor: '#1e293b', color: '#cbd5e1', border: '1px solid #334155', borderRadius: '999px', padding: '6px 12px', cursor: 'pointer', fontSize: '12px', fontWeight: '600', whiteSpace: 'nowrap' },
+  section: { scrollMarginTop: '64px', display: 'flex', flexDirection: 'column', gap: '16px' },
   sectionTitle: { fontSize: '18px', color: '#cbd5e1', margin: 0 },
   cardsGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' },
   card: { backgroundColor: '#1e293b', borderRadius: '12px', padding: '16px', border: '1px solid #334155', display: 'flex', flexDirection: 'column', gap: '12px' },
