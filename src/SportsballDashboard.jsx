@@ -316,24 +316,32 @@ export function NascarCard({ race, seriesId = 'nascar', favorites = [], onToggle
 
 // Basketball and hockey: same ESPN scoreboard, simple team-vs-team games.
 export const TEAM_FEEDS = {
-  ncaab: {
-    sport: 'basketball', league: 'mens-college-basketball', label: 'NCAA Basketball',
-    tag: 'NCAAB', icon: '🏀', regPeriods: 2, query: 'groups=50&limit=200',
-  },
-  nhl: {
-    sport: 'hockey', league: 'nhl', label: 'NHL Hockey',
-    tag: 'NHL', icon: '🏒', regPeriods: 3, query: '',
-  },
+  ncaab: { sport: 'basketball', league: 'mens-college-basketball', label: "NCAA Men's Basketball", tag: 'NCAAM', icon: '🏀', regPeriods: 2, query: 'groups=50&limit=200' },
+  ncaaw: { sport: 'basketball', league: 'womens-college-basketball', label: "NCAA Women's Basketball", tag: 'NCAAW', icon: '🏀', regPeriods: 4, query: 'groups=50&limit=200' },
+  ncaabase: { sport: 'baseball', league: 'college-baseball', label: 'NCAA Baseball', tag: 'NCAA BSB', icon: '⚾', regPeriods: 9, query: 'limit=200' },
+  ncaasoft: { sport: 'baseball', league: 'college-softball', label: 'NCAA Softball', tag: 'NCAA SB', icon: '🥎', regPeriods: 7, query: 'limit=200' },
+  ncaamhockey: { sport: 'hockey', league: 'mens-college-hockey', label: "NCAA Men's Hockey", tag: 'NCAAM HKY', icon: '🏒', regPeriods: 3, query: 'limit=200' },
+  ncaawhockey: { sport: 'hockey', league: 'womens-college-hockey', label: "NCAA Women's Hockey", tag: 'NCAAW HKY', icon: '🏒', regPeriods: 3, query: 'limit=200' },
+  ncaamsoccer: { sport: 'soccer', league: 'usa.ncaa.m.1', label: "NCAA Men's Soccer", tag: 'NCAAM SOC', icon: '⚽', regPeriods: 2, query: 'limit=200' },
+  ncaawsoccer: { sport: 'soccer', league: 'usa.ncaa.w.1', label: "NCAA Women's Soccer", tag: 'NCAAW SOC', icon: '⚽', regPeriods: 2, query: 'limit=200' },
+  ncaawvolley: { sport: 'volleyball', league: 'womens-college-volleyball', label: "NCAA Women's Volleyball", tag: 'NCAAW VB', icon: '🏐', regPeriods: 5, query: 'limit=200' },
+  ncaamvolley: { sport: 'volleyball', league: 'mens-college-volleyball', label: "NCAA Men's Volleyball", tag: 'NCAAM VB', icon: '🏐', regPeriods: 5, query: 'limit=200' },
+  ncaamlax: { sport: 'lacrosse', league: 'mens-college-lacrosse', label: "NCAA Men's Lacrosse", tag: 'NCAAM LAX', icon: '🥍', regPeriods: 4, query: 'limit=200' },
+  ncaawlax: { sport: 'lacrosse', league: 'womens-college-lacrosse', label: "NCAA Women's Lacrosse", tag: 'NCAAW LAX', icon: '🥍', regPeriods: 2, query: 'limit=200' },
+  nhl: { sport: 'hockey', league: 'nhl', label: 'NHL Hockey', tag: 'NHL', icon: '🏒', regPeriods: 3, query: '' },
 };
 
-export function useTeamScoreboard(feedId, pollIntervalMs = 10000, date = '') {
+// Shown on by default; the rest are one tap away in the plugin manager.
+const DEFAULT_PLUGINS = ['nfl', 'cfb', 'ncaab', 'nhl', 'nascar', 'nascar-oreilly', 'nascar-truck'];
+
+export function useTeamScoreboard(feedId, pollIntervalMs = 10000, date = '', enabled = true) {
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const feed = TEAM_FEEDS[feedId];
 
   useEffect(() => {
-    if (!feed) return undefined;
+    if (!feed || !enabled) return undefined; // off in the plugin manager: no requests
     let isMounted = true;
     setLoading(true);
     const fetchScores = async () => {
@@ -400,7 +408,7 @@ export function useTeamScoreboard(feedId, pollIntervalMs = 10000, date = '') {
       isMounted = false;
       if (interval) clearInterval(interval);
     };
-  }, [feedId, pollIntervalMs, date]);
+  }, [feedId, pollIntervalMs, date, enabled]);
 
   return { games, loading, error };
 }
@@ -668,8 +676,12 @@ export function FootballCard({ game, favorites = [], onToggleFavorite }) {
 const AVAILABLE_PLUGINS = [
   { id: 'nfl', name: 'NFL Football', category: 'Gridiron', desc: 'Live scores, clock & down/distance' },
   { id: 'cfb', name: 'College Football (CFB)', category: 'Gridiron', desc: 'AP Top 25 & FBS games' },
-  { id: 'ncaab', name: 'NCAA Basketball', category: 'Hoops', desc: "Men's college basketball scores & box scores" },
-  { id: 'nhl', name: 'NHL Hockey', category: 'Hockey', desc: 'Scores & box scores' },
+  ...Object.entries(TEAM_FEEDS).map(([id, f]) => ({
+    id,
+    name: f.label,
+    category: f.league.includes('college') || f.league.includes('ncaa') ? 'NCAA' : 'Pro',
+    desc: 'Scores, line scores & box scores',
+  })),
   { id: 'mlb', name: 'MLB Baseball', category: 'Baseball', desc: 'StatsAPI pitch-by-pitch (Offseason)' },
   { id: 'nascar', name: 'NASCAR Cup Series', category: 'Motorsport', desc: 'Qualifying / live / result top 5' },
   { id: 'nascar-oreilly', name: "NASCAR O'Reilly Series", category: 'Motorsport', desc: 'Pole / live leader / winner' },
@@ -714,7 +726,7 @@ export function PluginModal({ isOpen, onClose, activePlugins, onTogglePlugin }) 
 }
 
 export default function SportsballDashboard() {
-  const [activePlugins, setActivePlugins] = useState(['nfl', 'cfb', 'ncaab', 'nhl', 'nascar', 'nascar-oreilly', 'nascar-truck']);
+  const [activePlugins, setActivePlugins] = useState(DEFAULT_PLUGINS);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const { favorites, toggleFavorite } = useFavorites();
@@ -724,8 +736,14 @@ export default function SportsballDashboard() {
 
   const { games: nflGames, loading: nflLoading } = useFootballScoreboard('nfl', 5000, selectedDate);
   const { games: cfbGames, loading: cfbLoading } = useFootballScoreboard('college-football', 10000, selectedDate);
-  const { games: ncaabGames, loading: ncaabLoading } = useTeamScoreboard('ncaab', 10000, selectedDate);
-  const { games: nhlGames, loading: nhlLoading } = useTeamScoreboard('nhl', 10000, selectedDate);
+  // Fixed list of feeds, so the hook order never changes; switched-off feeds make no requests.
+  const teamFeeds = Object.fromEntries(
+    Object.keys(TEAM_FEEDS).map((id) => [
+      id,
+      // eslint-disable-next-line react-hooks/rules-of-hooks
+      useTeamScoreboard(id, 10000, selectedDate, activePlugins.includes(id)),
+    ])
+  );
   const nascarCup = useNascarSeries('nascar', 15000, selectedDate);
   const nascarOreilly = useNascarSeries('nascar-oreilly', 15000, selectedDate);
   const nascarTruck = useNascarSeries('nascar-truck', 15000, selectedDate);
@@ -736,8 +754,7 @@ export default function SportsballDashboard() {
   const allActiveGames = [
     ...(activePlugins.includes('nfl') ? nflGames : []),
     ...(activePlugins.includes('cfb') ? cfbGames : []),
-    ...(activePlugins.includes('ncaab') ? ncaabGames : []),
-    ...(activePlugins.includes('nhl') ? nhlGames : []),
+    ...Object.keys(TEAM_FEEDS).flatMap((id) => (activePlugins.includes(id) ? teamFeeds[id].games : [])),
   ];
 
   const togglePlugin = (id) => {
@@ -809,8 +826,9 @@ export default function SportsballDashboard() {
           </section>
         )}
 
-        {[['ncaab', ncaabGames, ncaabLoading], ['nhl', nhlGames, nhlLoading]].map(([id, list, isLoading]) =>
-          activePlugins.includes(id) ? (
+        {Object.keys(TEAM_FEEDS).map((id) => {
+          const { games: list, loading: isLoading } = teamFeeds[id];
+          return activePlugins.includes(id) ? (
             <section key={id} style={styles.section}>
               <h2 style={styles.sectionTitle}>{TEAM_FEEDS[id].icon} {TEAM_FEEDS[id].label}</h2>
               <div style={styles.cardsGrid}>
@@ -825,8 +843,8 @@ export default function SportsballDashboard() {
                 )}
               </div>
             </section>
-          ) : null
-        )}
+          ) : null;
+        })}
 
         {activePlugins.includes('mlb') && (
           <section style={styles.section}>
@@ -923,7 +941,7 @@ const styles = {
   modalContent: { backgroundColor: '#1e293b', borderRadius: '16px', padding: '24px', width: '480px', maxWidth: '90vw' },
   modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' },
   closeBtn: { background: 'none', border: 'none', color: '#94a3b8', fontSize: '20px', cursor: 'pointer' },
-  pluginList: { display: 'flex', flexDirection: 'column', gap: '16px' },
+  pluginList: { display: 'flex', flexDirection: 'column', gap: '16px', maxHeight: '60vh', overflowY: 'auto' },
   pluginRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0f172a', padding: '12px 16px', borderRadius: '8px' },
   pluginTitle: { fontWeight: 'bold', fontSize: '14px' },
   categoryBadge: { fontSize: '10px', backgroundColor: '#334155', color: '#cbd5e1', padding: '2px 6px', borderRadius: '4px', marginLeft: '6px' },
