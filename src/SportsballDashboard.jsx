@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 
 /**
  * SPORTSBALL DASHBOARD v2
@@ -833,6 +834,36 @@ export function fieldAlertCandidate({ id, status, title, pinned, noun }) {
 // Football games keep teams under details.football; other sports put them at game.teams.
 const gameTeams = (g) => g.teams || g.details?.football?.teams || {};
 
+// ---- Android: favorites + persistent background watcher (native foreground service) ----
+// Favorites are also kept in the app's native storage, which Android Auto Backup restores
+// after a reinstall. In a browser or on desktop these are all no-ops.
+export const nativeWatcher = Capacitor.isNativePlatform() ? registerPlugin('Watcher') : null;
+
+// What the background service needs to know, built from the pins and the switched-on widgets.
+export function buildWatchConfig(favorites, activePlugins) {
+  const feedForLeague = (league) => {
+    if (league === 'nfl') return activePlugins.includes('nfl') ? { sport: 'football', league, query: '' } : null;
+    if (league === 'college-football') return activePlugins.includes('cfb') ? { sport: 'football', league, query: '' } : null;
+    const hit = Object.entries(TEAM_FEEDS).find(([, f]) => f.league === league);
+    return hit && activePlugins.includes(hit[0]) ? { sport: hit[1].sport, league, query: hit[1].query } : null;
+  };
+  const teams = favorites
+    .filter((k) => !k.startsWith('driver:') && !k.startsWith('player:'))
+    .map((k) => {
+      const i = k.indexOf(':');
+      const feed = feedForLeague(k.slice(0, i));
+      return feed ? { ...feed, code: k.slice(i + 1) } : null;
+    })
+    .filter(Boolean);
+  return {
+    teams,
+    drivers: favorites.filter((k) => k.startsWith('driver:')).map((k) => k.slice(7)),
+    players: favorites.filter((k) => k.startsWith('player:')).map((k) => k.slice(7)),
+    racing: Object.entries(NASCAR_SERIES).filter(([id]) => activePlugins.includes(id)).map(([, sr]) => sr.slug),
+    golf: Object.entries(GOLF_TOURS).filter(([id]) => activePlugins.includes(id)).map(([, t]) => t.slug),
+  };
+}
+
 // ---- Favorites (pinned teams and drivers), remembered on this device ----
 const FAV_KEY = 'sportsball.favoriteTeams';
 export const teamKey = (leagueSlug, code) => `${leagueSlug}:${code}`;
@@ -846,17 +877,54 @@ export function useFavorites() {
       return [];
     }
   });
+  const [nativeReady, setNativeReady] = useState(!nativeWatcher);
+  const [watcherOn, setWatcherOn] = useState(false);
+
+  const remember = (list) => {
+    try {
+      localStorage.setItem(FAV_KEY, JSON.stringify(list));
+    } catch {
+      /* storage unavailable: pins last for this session only */
+    }
+  };
+
+  // Android: merge in what native storage kept (e.g. restored after a reinstall).
+  useEffect(() => {
+    if (!nativeWatcher) return;
+    nativeWatcher
+      .getState()
+      .then((st) => {
+        setWatcherOn(Boolean(st.enabled));
+        setFavorites((prev) => {
+          const merged = [...new Set([...prev, ...(st.favorites || [])])];
+          remember(merged);
+          return merged;
+        });
+      })
+      .catch(() => {})
+      .finally(() => setNativeReady(true));
+  }, []);
+
+  // Keep native storage in step, but only after the merge above so an empty list never wins.
+  useEffect(() => {
+    if (nativeWatcher && nativeReady) nativeWatcher.save({ favorites }).catch(() => {});
+  }, [favorites, nativeReady]);
+
   const toggleFavorite = (key) =>
     setFavorites((prev) => {
       const next = prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key];
-      try {
-        localStorage.setItem(FAV_KEY, JSON.stringify(next));
-      } catch {
-        /* storage unavailable: pins last for this session only */
-      }
+      remember(next);
       return next;
     });
-  return { favorites, toggleFavorite };
+
+  const toggleWatcher = async () => {
+    if (!nativeWatcher) return;
+    const next = !watcherOn;
+    await nativeWatcher.setEnabled({ enabled: next });
+    setWatcherOn(next);
+  };
+
+  return { favorites, toggleFavorite, nativeReady, watcherOn, toggleWatcher };
 }
 
 const isFavoriteGame = (g, favorites) => {
@@ -1128,7 +1196,7 @@ export default function SportsballDashboard() {
   const [activePlugins, setActivePlugins] = useState(DEFAULT_PLUGINS);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
-  const { favorites, toggleFavorite } = useFavorites();
+  const { favorites, toggleFavorite, nativeReady, watcherOn, toggleWatcher } = useFavorites();
   const [selectedDate, setSelectedDate] = useState(''); // '' = today / live
   const isHistory = selectedDate !== '';
   const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD, local time
@@ -1173,7 +1241,7 @@ export default function SportsballDashboard() {
     setToasts((prev) => [...prev, toast].slice(-4));
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.key !== toast.key)), 9000);
     try {
-      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      if (!watcherOn && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
         new Notification(a.title, { body: a.body, tag: id });
       }
     } catch {
@@ -1219,6 +1287,13 @@ export default function SportsballDashboard() {
       ];
   useScoreAlerts(alertCandidates, alertsOn, pushAlert);
 
+  // Tell the background service what to watch whenever pins or widgets change.
+  useEffect(() => {
+    if (nativeWatcher && nativeReady) {
+      nativeWatcher.save({ config: buildWatchConfig(favorites, activePlugins) }).catch(() => {});
+    }
+  }, [favorites, activePlugins, nativeReady]);
+
   const skipTo = (id) =>
     document.getElementById(`section-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
@@ -1263,6 +1338,16 @@ export default function SportsballDashboard() {
         >
           🔔 Alerts {alertsOn ? 'on' : 'off'}
         </button>
+        {nativeWatcher && (
+          <button
+            style={{ ...styles.todayBtn, backgroundColor: watcherOn ? '#2f855a' : '#334155', marginRight: '12px' }}
+            onClick={toggleWatcher}
+            aria-pressed={watcherOn}
+            title="Keep watching your pins with the app closed (shows a persistent notification)"
+          >
+            📡 Background {watcherOn ? 'on' : 'off'}
+          </button>
+        )}
         <button style={styles.pluginMgrBtn} onClick={() => setIsModalOpen(true)}>
           ⚙️ Manage Plugins ({activePlugins.length})
         </button>
