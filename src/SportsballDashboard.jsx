@@ -53,6 +53,8 @@ export function useFootballScoreboard(league = 'nfl', pollIntervalMs = 5000, dat
             sport: 'Football',
             league: league.toUpperCase(),
             leagueSlug: league,
+            sportSlug: 'football',
+            regPeriods: 4,
             title: evt.name,
             status: isLive ? 'LIVE' : statusType.state === 'post' ? 'FINAL' : 'PREGAME',
             summary: {
@@ -207,8 +209,31 @@ export function useNascarSeries(seriesId = 'nascar', pollIntervalMs = 15000, dat
 
 const driverLabel = (d) => `${d.number ? `#${d.number} ` : ''}${d.name}`;
 
-export function NascarCard({ race, seriesId = 'nascar' }) {
+const raceHasPinnedDriver = (race, favorites) =>
+  race.drivers.some((d) => favorites.includes(driverKey(d.name)));
+
+export const pinRacesFirst = (races, favorites) => [
+  ...races.filter((r) => raceHasPinnedDriver(r, favorites)),
+  ...races.filter((r) => !raceHasPinnedDriver(r, favorites)),
+];
+
+export function NascarCard({ race, seriesId = 'nascar', favorites = [], onToggleFavorite }) {
   const series = NASCAR_SERIES[seriesId];
+  const [showField, setShowField] = useState(false);
+  const pinnedDrivers = race.drivers.filter((d) => favorites.includes(driverKey(d.name)));
+  const driverStar = (d) => {
+    const on = favorites.includes(driverKey(d.name));
+    return (
+      <button
+        style={{ ...styles.starBtn, fontSize: '15px', color: on ? '#facc15' : '#64748b' }}
+        onClick={() => onToggleFavorite?.(driverKey(d.name))}
+        title={on ? `Unpin ${d.name}` : `Pin ${d.name} to the top`}
+        aria-pressed={on}
+      >
+        {on ? '★' : '☆'}
+      </button>
+    );
+  };
   const isLive = race.phase === 'LIVE' || race.phase === 'QUALIFYING LIVE';
   const color = isLive ? '#e53e3e' : race.phase === 'RESULT' ? '#2f855a' : '#4a5568';
   const top = race.drivers.slice(0, series.top);
@@ -219,7 +244,7 @@ export function NascarCard({ race, seriesId = 'nascar' }) {
   const winner = race.phase === 'RESULT' ? race.drivers.find((d) => d.winner) || race.drivers[0] : null;
 
   return (
-    <div style={styles.card}>
+    <div style={{ ...styles.card, borderColor: pinnedDrivers.length ? '#facc15' : '#334155' }}>
       <div style={styles.cardHeader}>
         <span style={styles.leagueTag}>{series.short}{label ? ` · ${label.toUpperCase()}` : ''}</span>
         <span style={{ ...styles.statusTag, backgroundColor: color }}>
@@ -236,6 +261,7 @@ export function NascarCard({ race, seriesId = 'nascar' }) {
             <li key={d.id || d.name} style={styles.driverRow}>
               <span style={styles.driverPos}>{d.position || '–'}</span>
               <span>{driverLabel(d)}{d.winner ? ' 🏆' : ''}</span>
+              {driverStar(d)}
             </li>
           ))}
         </ol>
@@ -255,8 +281,128 @@ export function NascarCard({ race, seriesId = 'nascar' }) {
           )}
         </div>
       )}
+
+      {pinnedDrivers.length > 0 && (
+        <div style={styles.driverList}>
+          {pinnedDrivers.map((d) => (
+            <div key={d.id || d.name} style={styles.driverRow}>
+              <span style={{ ...styles.headlineTag, color: '#facc15' }}>★ P{d.position || '–'}</span>
+              <span>{driverLabel(d)}</span>
+              {driverStar(d)}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {race.drivers.length > 0 && (
+        <button style={styles.boxBtn} onClick={() => setShowField((v) => !v)}>
+          {showField ? 'Hide field' : '📋 Full field (pin drivers)'}
+        </button>
+      )}
+      {showField && (
+        <ol style={{ ...styles.driverList, maxHeight: '260px', overflowY: 'auto' }}>
+          {race.drivers.map((d) => (
+            <li key={d.id || d.name} style={styles.driverRow}>
+              <span style={styles.driverPos}>{d.position || '–'}</span>
+              <span>{driverLabel(d)}</span>
+              {driverStar(d)}
+            </li>
+          ))}
+        </ol>
+      )}
     </div>
   );
+}
+
+// Basketball and hockey: same ESPN scoreboard, simple team-vs-team games.
+export const TEAM_FEEDS = {
+  ncaab: {
+    sport: 'basketball', league: 'mens-college-basketball', label: 'NCAA Basketball',
+    tag: 'NCAAB', icon: '🏀', regPeriods: 2, query: 'groups=50&limit=200',
+  },
+  nhl: {
+    sport: 'hockey', league: 'nhl', label: 'NHL Hockey',
+    tag: 'NHL', icon: '🏒', regPeriods: 3, query: '',
+  },
+};
+
+export function useTeamScoreboard(feedId, pollIntervalMs = 10000, date = '') {
+  const [games, setGames] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const feed = TEAM_FEEDS[feedId];
+
+  useEffect(() => {
+    if (!feed) return undefined;
+    let isMounted = true;
+    setLoading(true);
+    const fetchScores = async () => {
+      try {
+        const host = ['site', 'api', 'espn', 'com'].join('.');
+        const params = [feed.query, date ? `dates=${date.replace(/-/g, '')}` : ''].filter(Boolean).join('&');
+        const url = `https://${host}/apis/site/v2/sports/${feed.sport}/${feed.league}/scoreboard${params ? `?${params}` : ''}`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+        const data = await res.json();
+
+        const normalized = (data.events || []).map((evt) => {
+          const comp = evt.competitions?.[0] || {};
+          const statusType = evt.status?.type || {};
+          const competitors = comp.competitors || [];
+          const side = (ha) => {
+            const c = competitors.find((x) => x.homeAway === ha) || {};
+            return {
+              code: c.team?.abbreviation || ha.toUpperCase(),
+              name: c.team?.displayName || ha,
+              logo: c.team?.logo,
+              score: c.score || 0,
+              linescores: (c.linescores || []).map((l) => l.displayValue ?? l.value),
+            };
+          };
+          const away = side('away');
+          const home = side('home');
+          const isLive = statusType.state === 'in';
+          return {
+            id: evt.id,
+            sportSlug: feed.sport,
+            leagueSlug: feed.league,
+            regPeriods: feed.regPeriods,
+            league: feed.tag,
+            title: evt.name,
+            status: isLive ? 'LIVE' : statusType.state === 'post' ? 'FINAL' : 'PREGAME',
+            summary: {
+              primaryLabel: statusType.detail || 'Scheduled',
+              secondaryLabel: '',
+              scoreOrLeader: `${away.code} ${away.score} - ${home.score} ${home.code}`,
+            },
+            details: {},
+            teams: { away, home },
+          };
+        });
+
+        if (isMounted) {
+          setGames(normalized);
+          setError(null);
+          setLoading(false);
+        }
+      } catch (err) {
+        if (isMounted) {
+          setGames([]);
+          setError(err.message);
+          setLoading(false);
+        }
+      }
+    };
+
+    fetchScores();
+    const interval = date ? null : setInterval(fetchScores, pollIntervalMs);
+    return () => {
+      isMounted = false;
+      if (interval) clearInterval(interval);
+    };
+  }, [feedId, pollIntervalMs, date]);
+
+  return { games, loading, error };
 }
 
 export function TickerBanner({ games = [] }) {
@@ -285,9 +431,13 @@ export function TickerBanner({ games = [] }) {
   );
 }
 
-// ---- Favorites (pinned teams), remembered on this device ----
+// Football games keep teams under details.football; other sports put them at game.teams.
+const gameTeams = (g) => g.teams || g.details?.football?.teams || {};
+
+// ---- Favorites (pinned teams and drivers), remembered on this device ----
 const FAV_KEY = 'sportsball.favoriteTeams';
 export const teamKey = (leagueSlug, code) => `${leagueSlug}:${code}`;
+export const driverKey = (name) => `driver:${name}`;
 
 export function useFavorites() {
   const [favorites, setFavorites] = useState(() => {
@@ -311,7 +461,7 @@ export function useFavorites() {
 }
 
 const isFavoriteGame = (g, favorites) => {
-  const { away, home } = g.details?.football?.teams || {};
+  const { away, home } = gameTeams(g);
   return (
     favorites.includes(teamKey(g.leagueSlug, away?.code)) ||
     favorites.includes(teamKey(g.leagueSlug, home?.code))
@@ -335,7 +485,7 @@ function useGameSummary(game, enabled) {
       try {
         const host = ['site', 'api', 'espn', 'com'].join('.');
         const res = await fetch(
-          `https://${host}/apis/site/v2/sports/football/${game.leagueSlug}/summary?event=${game.id}`
+          `https://${host}/apis/site/v2/sports/${game.sportSlug || 'football'}/${game.leagueSlug}/summary?event=${game.id}`
         );
         if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
         const data = await res.json();
@@ -353,7 +503,7 @@ function useGameSummary(game, enabled) {
 
 export function BoxScore({ game }) {
   const { loading, error, data } = useGameSummary(game, true);
-  const { away, home } = game.details?.football?.teams || {};
+  const { away, home } = gameTeams(game);
   const periods = Math.max(away?.linescores?.length || 0, home?.linescores?.length || 0);
 
   const boxTeams = data?.boxscore?.teams || [];
@@ -386,7 +536,7 @@ export function BoxScore({ game }) {
             <tr>
               <th style={styles.boxTeamCell} />
               {Array.from({ length: periods }, (_, i) => (
-                <th key={i} style={styles.boxNum}>{i < 4 ? i + 1 : 'OT'}</th>
+                <th key={i} style={styles.boxNum}>{i < (game.regPeriods || 4) ? i + 1 : 'OT'}</th>
               ))}
               <th style={styles.boxNum}>T</th>
             </tr>
@@ -447,7 +597,7 @@ export function BoxScore({ game }) {
 
 export function FootballCard({ game, favorites = [], onToggleFavorite }) {
   const fb = game.details?.football || {};
-  const { away, home } = fb.teams || {};
+  const { away, home } = gameTeams(game);
   const isLive = game.status === 'LIVE';
   const [showBox, setShowBox] = useState(false);
   const pinned = isFavoriteGame(game, favorites);
@@ -518,6 +668,8 @@ export function FootballCard({ game, favorites = [], onToggleFavorite }) {
 const AVAILABLE_PLUGINS = [
   { id: 'nfl', name: 'NFL Football', category: 'Gridiron', desc: 'Live scores, clock & down/distance' },
   { id: 'cfb', name: 'College Football (CFB)', category: 'Gridiron', desc: 'AP Top 25 & FBS games' },
+  { id: 'ncaab', name: 'NCAA Basketball', category: 'Hoops', desc: "Men's college basketball scores & box scores" },
+  { id: 'nhl', name: 'NHL Hockey', category: 'Hockey', desc: 'Scores & box scores' },
   { id: 'mlb', name: 'MLB Baseball', category: 'Baseball', desc: 'StatsAPI pitch-by-pitch (Offseason)' },
   { id: 'nascar', name: 'NASCAR Cup Series', category: 'Motorsport', desc: 'Qualifying / live / result top 5' },
   { id: 'nascar-oreilly', name: "NASCAR O'Reilly Series", category: 'Motorsport', desc: 'Pole / live leader / winner' },
@@ -562,7 +714,7 @@ export function PluginModal({ isOpen, onClose, activePlugins, onTogglePlugin }) 
 }
 
 export default function SportsballDashboard() {
-  const [activePlugins, setActivePlugins] = useState(['nfl', 'cfb', 'nascar', 'nascar-oreilly', 'nascar-truck']);
+  const [activePlugins, setActivePlugins] = useState(['nfl', 'cfb', 'ncaab', 'nhl', 'nascar', 'nascar-oreilly', 'nascar-truck']);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const { favorites, toggleFavorite } = useFavorites();
@@ -572,6 +724,8 @@ export default function SportsballDashboard() {
 
   const { games: nflGames, loading: nflLoading } = useFootballScoreboard('nfl', 5000, selectedDate);
   const { games: cfbGames, loading: cfbLoading } = useFootballScoreboard('college-football', 10000, selectedDate);
+  const { games: ncaabGames, loading: ncaabLoading } = useTeamScoreboard('ncaab', 10000, selectedDate);
+  const { games: nhlGames, loading: nhlLoading } = useTeamScoreboard('nhl', 10000, selectedDate);
   const nascarCup = useNascarSeries('nascar', 15000, selectedDate);
   const nascarOreilly = useNascarSeries('nascar-oreilly', 15000, selectedDate);
   const nascarTruck = useNascarSeries('nascar-truck', 15000, selectedDate);
@@ -582,6 +736,8 @@ export default function SportsballDashboard() {
   const allActiveGames = [
     ...(activePlugins.includes('nfl') ? nflGames : []),
     ...(activePlugins.includes('cfb') ? cfbGames : []),
+    ...(activePlugins.includes('ncaab') ? ncaabGames : []),
+    ...(activePlugins.includes('nhl') ? nhlGames : []),
   ];
 
   const togglePlugin = (id) => {
@@ -653,6 +809,25 @@ export default function SportsballDashboard() {
           </section>
         )}
 
+        {[['ncaab', ncaabGames, ncaabLoading], ['nhl', nhlGames, nhlLoading]].map(([id, list, isLoading]) =>
+          activePlugins.includes(id) ? (
+            <section key={id} style={styles.section}>
+              <h2 style={styles.sectionTitle}>{TEAM_FEEDS[id].icon} {TEAM_FEEDS[id].label}</h2>
+              <div style={styles.cardsGrid}>
+                {list.length > 0 ? (
+                  pinFavoritesFirst(list, favorites).map((g) => (
+                    <FootballCard key={g.id} game={g} favorites={favorites} onToggleFavorite={toggleFavorite} />
+                  ))
+                ) : (
+                  <div style={styles.emptyCard}>
+                    {isLoading ? 'Loading…' : isHistory ? `No ${TEAM_FEEDS[id].label} games on ${selectedDate}.` : `No ${TEAM_FEEDS[id].label} games today.`}
+                  </div>
+                )}
+              </div>
+            </section>
+          ) : null
+        )}
+
         {activePlugins.includes('mlb') && (
           <section style={styles.section}>
             <h2 style={styles.sectionTitle}>⚾ Major League Baseball</h2>
@@ -668,7 +843,9 @@ export default function SportsballDashboard() {
               <h2 style={styles.sectionTitle}>🏎️ {series.name}</h2>
               <div style={styles.cardsGrid}>
                 {nascarFeeds[id].races.length > 0 ? (
-                  nascarFeeds[id].races.map((r) => <NascarCard key={r.id} race={r} seriesId={id} />)
+                  pinRacesFirst(nascarFeeds[id].races, favorites).map((r) => (
+                    <NascarCard key={r.id} race={r} seriesId={id} favorites={favorites} onToggleFavorite={toggleFavorite} />
+                  ))
                 ) : (
                   <div style={styles.emptyCard}>
                     {nascarFeeds[id].loading
