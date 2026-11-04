@@ -11,6 +11,49 @@ import React, { useState, useEffect } from 'react';
  */
 
 // date: 'YYYY-MM-DD' for a past day (history), or '' for today's live board.
+// ---- Polling: fast while something is live, slow when idle, and backing off on errors ----
+export const IDLE_POLL_MS = 60000; // no live games on the board
+const MAX_BACKOFF_MS = 5 * 60000;
+
+// Turns a bad HTTP response into an error that remembers any Retry-After (seconds).
+export function httpError(res) {
+  const err = new Error(`HTTP error! status: ${res.status}`);
+  const retry = Number(res.headers?.get?.('Retry-After'));
+  if (retry > 0) err.retryAfterMs = retry * 1000;
+  return err;
+}
+
+// Runs fetchOnce() on a timer until the returned stop() is called.
+//  - fetchOnce resolves true when something is live (poll fast), false otherwise (poll every 60 s)
+//  - fetchOnce rejects on failure: wait 60 s, then double each time up to 5 min (a Retry-After
+//    from the server wins if longer); the first success goes back to the normal pace.
+//  - once: a single fetch and no timer (a past date never changes).
+export function startPolling(fetchOnce, { fastMs, idleMs = IDLE_POLL_MS, once = false }) {
+  let timer = null;
+  let stopped = false;
+  let failures = 0;
+
+  const tick = async () => {
+    let next;
+    try {
+      const live = await fetchOnce();
+      failures = 0;
+      next = live ? fastMs : idleMs;
+    } catch (err) {
+      failures += 1;
+      next = Math.min(MAX_BACKOFF_MS, idleMs * 2 ** (failures - 1));
+      if (err?.retryAfterMs) next = Math.min(MAX_BACKOFF_MS, Math.max(next, err.retryAfterMs));
+    }
+    if (!stopped && !once) timer = setTimeout(tick, next);
+  };
+
+  tick();
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+  };
+}
+
 export function useFootballScoreboard(league = 'nfl', pollIntervalMs = 5000, date = '') {
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -26,7 +69,7 @@ export function useFootballScoreboard(league = 'nfl', pollIntervalMs = 5000, dat
         const host = domainParts.join('.');
         const url = `https://${host}/apis/site/v2/sports/football/${league}/scoreboard${date ? `?dates=${date.replace(/-/g, '')}` : ''}`;
         const res = await fetch(url);
-        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+        if (!res.ok) throw httpError(res);
         const data = await res.json();
         
         const normalized = (data.events || []).map((evt) => {
@@ -96,21 +139,22 @@ export function useFootballScoreboard(league = 'nfl', pollIntervalMs = 5000, dat
           setError(null);
           setLoading(false);
         }
+        return normalized.some((g) => g.status === 'LIVE');
       } catch (err) {
+        // Keep what is already on screen; only the error note changes.
         if (isMounted) {
-          setGames([]);
           setError(err.message);
           setLoading(false);
         }
+        throw err;
       }
     };
 
-    fetchScores();
-    // A finished day never changes, so only poll the live board.
-    const interval = date ? null : setInterval(fetchScores, pollIntervalMs);
+    // A past date never changes: one fetch, no timer.
+    const stop = startPolling(fetchScores, { fastMs: pollIntervalMs, once: Boolean(date) });
     return () => {
       isMounted = false;
-      if (interval) clearInterval(interval);
+      stop();
     };
   }, [league, pollIntervalMs, date]);
 
@@ -146,6 +190,7 @@ export function useNascarSeries(seriesId = 'nascar', pollIntervalMs = 15000, dat
     if (!slug) return undefined;
     let isMounted = true;
     setLoading(true);
+    setRaces([]);
     const fetchRaces = async () => {
       try {
         const host = ['site', 'api', 'espn', 'com'].join('.');
@@ -153,7 +198,7 @@ export function useNascarSeries(seriesId = 'nascar', pollIntervalMs = 15000, dat
           date ? `?dates=${date.replace(/-/g, '')}` : ''
         }`;
         const res = await fetch(url);
-        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+        if (!res.ok) throw httpError(res);
         const data = await res.json();
 
         const normalized = (data.events || []).map((evt) => {
@@ -187,20 +232,22 @@ export function useNascarSeries(seriesId = 'nascar', pollIntervalMs = 15000, dat
           setError(null);
           setLoading(false);
         }
+        return normalized.some((r) => r.phase === 'LIVE' || r.phase === 'QUALIFYING LIVE');
       } catch (err) {
+        // Keep what is already on screen; only the error note changes.
         if (isMounted) {
-          setRaces([]);
           setError(err.message);
           setLoading(false);
         }
+        throw err;
       }
     };
 
-    fetchRaces();
-    const interval = date ? null : setInterval(fetchRaces, pollIntervalMs);
+    // A past date never changes: one fetch, no timer.
+    const stop = startPolling(fetchRaces, { fastMs: pollIntervalMs, once: Boolean(date) });
     return () => {
       isMounted = false;
-      if (interval) clearInterval(interval);
+      stop();
     };
   }, [slug, pollIntervalMs, date]);
 
@@ -344,13 +391,14 @@ export function useTeamScoreboard(feedId, pollIntervalMs = 10000, date = '', ena
     if (!feed || !enabled) return undefined; // off in the plugin manager: no requests
     let isMounted = true;
     setLoading(true);
+    setGames([]);
     const fetchScores = async () => {
       try {
         const host = ['site', 'api', 'espn', 'com'].join('.');
         const params = [feed.query, date ? `dates=${date.replace(/-/g, '')}` : ''].filter(Boolean).join('&');
         const url = `https://${host}/apis/site/v2/sports/${feed.sport}/${feed.league}/scoreboard${params ? `?${params}` : ''}`;
         const res = await fetch(url);
-        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+        if (!res.ok) throw httpError(res);
         const data = await res.json();
 
         const normalized = (data.events || []).map((evt) => {
@@ -393,20 +441,22 @@ export function useTeamScoreboard(feedId, pollIntervalMs = 10000, date = '', ena
           setError(null);
           setLoading(false);
         }
+        return normalized.some((g) => g.status === 'LIVE');
       } catch (err) {
+        // Keep what is already on screen; only the error note changes.
         if (isMounted) {
-          setGames([]);
           setError(err.message);
           setLoading(false);
         }
+        throw err;
       }
     };
 
-    fetchScores();
-    const interval = date ? null : setInterval(fetchScores, pollIntervalMs);
+    // A past date never changes: one fetch, no timer.
+    const stop = startPolling(fetchScores, { fastMs: pollIntervalMs, once: Boolean(date) });
     return () => {
       isMounted = false;
-      if (interval) clearInterval(interval);
+      stop();
     };
   }, [feedId, pollIntervalMs, date, enabled]);
 
@@ -495,7 +545,7 @@ function useGameSummary(game, enabled) {
         const res = await fetch(
           `https://${host}/apis/site/v2/sports/${game.sportSlug || 'football'}/${game.leagueSlug}/summary?event=${game.id}`
         );
-        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+        if (!res.ok) throw httpError(res);
         const data = await res.json();
         if (isMounted) setState({ loading: false, error: null, data });
       } catch (err) {
