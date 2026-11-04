@@ -7,7 +7,7 @@ import React, { useState, useEffect } from 'react';
  *  - Top Live Ticker Banner
  *  - Direct ESPN API Football Plugin (NFL & CFB)
  *  - Plugin Manager Modal
- *  - Offseason status for MLB & NASCAR
+ *  - Team sports, NASCAR/F1/IndyCar and golf widgets
  */
 
 // date: 'YYYY-MM-DD' for a past day (history), or '' for today's live board.
@@ -167,6 +167,8 @@ export const NASCAR_SERIES = {
   nascar: { slug: 'nascar-premier', name: 'NASCAR Cup Series', short: 'CUP', top: 5 },
   'nascar-oreilly': { slug: 'nascar-secondary', name: "NASCAR O'Reilly Auto Parts Series", short: "O'REILLY", top: 1 },
   'nascar-truck': { slug: 'nascar-truck', name: 'NASCAR Truck Series', short: 'TRUCK', top: 1 },
+  f1: { slug: 'f1', name: 'Formula 1', short: 'F1', top: 5 },
+  indycar: { slug: 'irl', name: 'IndyCar Series', short: 'INDYCAR', top: 5 },
 };
 
 const toDrivers = (comp = {}) =>
@@ -180,14 +182,14 @@ const toDrivers = (comp = {}) =>
     }))
     .sort((a, b) => (a.position || 99) - (b.position || 99));
 
-export function useNascarSeries(seriesId = 'nascar', pollIntervalMs = 15000, date = '') {
+export function useNascarSeries(seriesId = 'nascar', pollIntervalMs = 15000, date = '', enabled = true) {
   const [races, setRaces] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const slug = NASCAR_SERIES[seriesId]?.slug;
 
   useEffect(() => {
-    if (!slug) return undefined;
+    if (!slug || !enabled) return undefined;
     let isMounted = true;
     setLoading(true);
     setRaces([]);
@@ -249,7 +251,7 @@ export function useNascarSeries(seriesId = 'nascar', pollIntervalMs = 15000, dat
       isMounted = false;
       stop();
     };
-  }, [slug, pollIntervalMs, date]);
+  }, [slug, pollIntervalMs, date, enabled]);
 
   return { races, loading, error };
 }
@@ -376,10 +378,24 @@ export const TEAM_FEEDS = {
   ncaamlax: { sport: 'lacrosse', league: 'mens-college-lacrosse', label: "NCAA Men's Lacrosse", tag: 'NCAAM LAX', icon: '🥍', regPeriods: 4, query: 'limit=200' },
   ncaawlax: { sport: 'lacrosse', league: 'womens-college-lacrosse', label: "NCAA Women's Lacrosse", tag: 'NCAAW LAX', icon: '🥍', regPeriods: 2, query: 'limit=200' },
   nhl: { sport: 'hockey', league: 'nhl', label: 'NHL Hockey', tag: 'NHL', icon: '🏒', regPeriods: 3, query: '' },
+  nba: { sport: 'basketball', league: 'nba', label: 'NBA Basketball', tag: 'NBA', icon: '🏀', regPeriods: 4, query: '' },
+  wnba: { sport: 'basketball', league: 'wnba', label: 'WNBA Basketball', tag: 'WNBA', icon: '🏀', regPeriods: 4, query: '' },
+  mlb: { sport: 'baseball', league: 'mlb', label: 'MLB Baseball', tag: 'MLB', icon: '⚾', regPeriods: 9, query: '' },
+  mls: { sport: 'soccer', league: 'usa.1', label: 'MLS', tag: 'MLS', icon: '⚽', regPeriods: 2, query: '' },
+  epl: { sport: 'soccer', league: 'eng.1', label: 'Premier League', tag: 'EPL', icon: '⚽', regPeriods: 2, query: '' },
+  laliga: { sport: 'soccer', league: 'esp.1', label: 'La Liga', tag: 'LA LIGA', icon: '⚽', regPeriods: 2, query: '' },
+  bundesliga: { sport: 'soccer', league: 'ger.1', label: 'Bundesliga', tag: 'BUNDES', icon: '⚽', regPeriods: 2, query: '' },
+  seriea: { sport: 'soccer', league: 'ita.1', label: 'Serie A', tag: 'SERIE A', icon: '⚽', regPeriods: 2, query: '' },
+  ligue1: { sport: 'soccer', league: 'fra.1', label: 'Ligue 1', tag: 'LIGUE 1', icon: '⚽', regPeriods: 2, query: '' },
+  ligamx: { sport: 'soccer', league: 'mex.1', label: 'Liga MX', tag: 'LIGA MX', icon: '⚽', regPeriods: 2, query: '' },
+  ucl: { sport: 'soccer', league: 'uefa.champions', label: 'Champions League', tag: 'UCL', icon: '⚽', regPeriods: 2, query: '' },
+  worldcup: { sport: 'soccer', league: 'fifa.world', label: 'FIFA World Cup', tag: 'WORLD CUP', icon: '🌍', regPeriods: 2, query: '' },
+  cfl: { sport: 'football', league: 'cfl', label: 'CFL Football', tag: 'CFL', icon: '🏈', regPeriods: 4, query: '' },
+  ufl: { sport: 'football', league: 'ufl', label: 'UFL Football', tag: 'UFL', icon: '🏈', regPeriods: 4, query: '' },
 };
 
 // Shown on by default; the rest are one tap away in the plugin manager.
-const DEFAULT_PLUGINS = ['nfl', 'cfb', 'ncaab', 'nhl', 'nascar', 'nascar-oreilly', 'nascar-truck'];
+const DEFAULT_PLUGINS = ['nfl', 'cfb', 'ncaab', 'nba', 'nhl', 'nascar', 'nascar-oreilly', 'nascar-truck'];
 
 export function useTeamScoreboard(feedId, pollIntervalMs = 10000, date = '', enabled = true) {
   const [games, setGames] = useState([]);
@@ -461,6 +477,156 @@ export function useTeamScoreboard(feedId, pollIntervalMs = 10000, date = '', ena
   }, [feedId, pollIntervalMs, date, enabled]);
 
   return { games, loading, error };
+}
+
+// ---- Golf: PGA / LPGA tournament leaderboards ----
+export const GOLF_TOURS = {
+  pga: { slug: 'pga', name: 'PGA Tour', short: 'PGA' },
+  lpga: { slug: 'lpga', name: 'LPGA Tour', short: 'LPGA' },
+};
+export const playerKey = (name) => `player:${name}`;
+
+export function useGolfTour(tourId = 'pga', pollIntervalMs = 30000, date = '', enabled = true) {
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const slug = GOLF_TOURS[tourId]?.slug;
+
+  useEffect(() => {
+    if (!slug || !enabled) return undefined;
+    let isMounted = true;
+    setLoading(true);
+    setEvents([]);
+    const fetchEvents = async () => {
+      try {
+        const host = ['site', 'api', 'espn', 'com'].join('.');
+        const url = `https://${host}/apis/site/v2/sports/golf/${slug}/scoreboard${
+          date ? `?dates=${date.replace(/-/g, '')}` : ''
+        }`;
+        const res = await fetch(url);
+        if (!res.ok) throw httpError(res);
+        const data = await res.json();
+
+        const normalized = (data.events || []).map((evt) => {
+          const comp = evt.competitions?.[0] || {};
+          const statusType = evt.status?.type || comp.status?.type || {};
+          const players = (comp.competitors || [])
+            .map((c, i) => ({
+              id: c.id || c.athlete?.id,
+              position: Number(c.order ?? c.sortOrder ?? i + 1) || i + 1,
+              name: c.athlete?.displayName || c.athlete?.shortName || 'Player',
+              score: c.score?.displayValue ?? c.score ?? '',
+              thru: c.status?.thru ?? c.status?.displayThru ?? '',
+            }))
+            .sort((a, b) => a.position - b.position);
+          return {
+            id: evt.id,
+            title: evt.name || evt.shortName || 'Tournament',
+            course: comp.venue?.fullName || evt.courses?.[0]?.name || '',
+            status: statusType.state === 'in' ? 'LIVE' : statusType.state === 'post' ? 'FINAL' : 'UPCOMING',
+            detail: statusType.detail || statusType.description || '',
+            players,
+          };
+        });
+
+        if (isMounted) {
+          setEvents(normalized);
+          setError(null);
+          setLoading(false);
+        }
+        return normalized.some((e) => e.status === 'LIVE');
+      } catch (err) {
+        if (isMounted) {
+          setError(err.message);
+          setLoading(false);
+        }
+        throw err;
+      }
+    };
+
+    const stop = startPolling(fetchEvents, { fastMs: pollIntervalMs, once: Boolean(date) });
+    return () => {
+      isMounted = false;
+      stop();
+    };
+  }, [slug, pollIntervalMs, date, enabled]);
+
+  return { events, loading, error };
+}
+
+const eventHasPinnedPlayer = (e, favorites) =>
+  e.players.some((p) => favorites.includes(playerKey(p.name)));
+
+export const pinEventsFirst = (events, favorites) => [
+  ...events.filter((e) => eventHasPinnedPlayer(e, favorites)),
+  ...events.filter((e) => !eventHasPinnedPlayer(e, favorites)),
+];
+
+export function GolfCard({ event, tourId = 'pga', favorites = [], onToggleFavorite }) {
+  const tour = GOLF_TOURS[tourId];
+  const [showAll, setShowAll] = useState(false);
+  const isLive = event.status === 'LIVE';
+  const pinned = event.players.filter((p) => favorites.includes(playerKey(p.name)));
+  const top = event.players.slice(0, 10);
+  const rows = showAll ? event.players : top;
+  const star = (pl) => {
+    const on = favorites.includes(playerKey(pl.name));
+    return (
+      <button
+        style={{ ...styles.starBtn, fontSize: '15px', color: on ? '#facc15' : '#64748b' }}
+        onClick={() => onToggleFavorite?.(playerKey(pl.name))}
+        title={on ? `Unpin ${pl.name}` : `Pin ${pl.name} to the top`}
+        aria-pressed={on}
+      >
+        {on ? '★' : '☆'}
+      </button>
+    );
+  };
+  const row = (pl) => (
+    <li key={pl.id || pl.name} style={styles.driverRow}>
+      <span style={styles.driverPos}>{pl.position}</span>
+      <span style={{ flex: 1 }}>{pl.name}</span>
+      <span style={styles.pluginDesc}>{pl.thru ? `thru ${pl.thru}` : ''}</span>
+      <span style={{ fontWeight: 'bold', width: '36px', textAlign: 'right' }}>{pl.score}</span>
+      {star(pl)}
+    </li>
+  );
+
+  return (
+    <div style={{ ...styles.card, borderColor: pinned.length ? '#facc15' : '#334155' }}>
+      <div style={styles.cardHeader}>
+        <span style={styles.leagueTag}>{tour.short}</span>
+        <span style={{ ...styles.statusTag, backgroundColor: isLive ? '#e53e3e' : event.status === 'FINAL' ? '#2f855a' : '#4a5568' }}>
+          {isLive ? '🔴 LIVE' : event.status}
+        </span>
+      </div>
+      <div style={styles.teamName}>{event.title}</div>
+      {event.course && <div style={styles.pluginDesc}>{event.course}</div>}
+      {event.detail && <div style={styles.situationBox}>{event.detail}</div>}
+
+      {pinned.length > 0 && (
+        <ol style={styles.driverList}>
+          {pinned.map((pl) => (
+            <li key={pl.id || pl.name} style={{ ...styles.driverRow, color: '#facc15' }}>
+              <span style={styles.driverPos}>{pl.position}</span>
+              <span style={{ flex: 1 }}>★ {pl.name}</span>
+              <span style={{ fontWeight: 'bold' }}>{pl.score}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+      {rows.length > 0 && (
+        <ol style={{ ...styles.driverList, maxHeight: showAll ? '320px' : 'none', overflowY: 'auto' }}>
+          {rows.map(row)}
+        </ol>
+      )}
+      {event.players.length > 10 && (
+        <button style={styles.boxBtn} onClick={() => setShowAll((v) => !v)}>
+          {showAll ? 'Show top 10' : `📋 Full field (${event.players.length}) — pin players`}
+        </button>
+      )}
+    </div>
+  );
 }
 
 export function TickerBanner({ games = [] }) {
@@ -729,13 +895,21 @@ const AVAILABLE_PLUGINS = [
   ...Object.entries(TEAM_FEEDS).map(([id, f]) => ({
     id,
     name: f.label,
-    category: f.league.includes('college') || f.league.includes('ncaa') ? 'NCAA' : 'Pro',
+    category: f.league.includes('college') || f.league.includes('ncaa') ? 'NCAA' : f.sport === 'soccer' ? 'Soccer' : 'Pro',
     desc: 'Scores, line scores & box scores',
   })),
-  { id: 'mlb', name: 'MLB Baseball', category: 'Baseball', desc: 'StatsAPI pitch-by-pitch (Offseason)' },
-  { id: 'nascar', name: 'NASCAR Cup Series', category: 'Motorsport', desc: 'Qualifying / live / result top 5' },
-  { id: 'nascar-oreilly', name: "NASCAR O'Reilly Series", category: 'Motorsport', desc: 'Pole / live leader / winner' },
-  { id: 'nascar-truck', name: 'NASCAR Truck Series', category: 'Motorsport', desc: 'Pole / live leader / winner' },
+  ...Object.entries(NASCAR_SERIES).map(([id, sr]) => ({
+    id,
+    name: sr.name,
+    category: 'Motorsport',
+    desc: sr.top > 1 ? 'Qualifying / live / result top 5' : 'Pole / live leader / winner',
+  })),
+  ...Object.entries(GOLF_TOURS).map(([id, t]) => ({
+    id,
+    name: t.name,
+    category: 'Golf',
+    desc: 'Leaderboard with pinned players on top',
+  })),
 ];
 
 export function PluginModal({ isOpen, onClose, activePlugins, onTogglePlugin }) {
@@ -794,10 +968,20 @@ export default function SportsballDashboard() {
       useTeamScoreboard(id, 10000, selectedDate, activePlugins.includes(id)),
     ])
   );
-  const nascarCup = useNascarSeries('nascar', 15000, selectedDate);
-  const nascarOreilly = useNascarSeries('nascar-oreilly', 15000, selectedDate);
-  const nascarTruck = useNascarSeries('nascar-truck', 15000, selectedDate);
-  const nascarFeeds = { nascar: nascarCup, 'nascar-oreilly': nascarOreilly, 'nascar-truck': nascarTruck };
+  const nascarFeeds = Object.fromEntries(
+    Object.keys(NASCAR_SERIES).map((id) => [
+      id,
+      // eslint-disable-next-line react-hooks/rules-of-hooks
+      useNascarSeries(id, 15000, selectedDate, activePlugins.includes(id)),
+    ])
+  );
+  const golfFeeds = Object.fromEntries(
+    Object.keys(GOLF_TOURS).map((id) => [
+      id,
+      // eslint-disable-next-line react-hooks/rules-of-hooks
+      useGolfTour(id, 30000, selectedDate, activePlugins.includes(id)),
+    ])
+  );
   const emptyText = (name) =>
     isHistory ? `No ${name} games on ${selectedDate}.` : `No live ${name} games right now.`;
 
@@ -896,15 +1080,6 @@ export default function SportsballDashboard() {
           ) : null;
         })}
 
-        {activePlugins.includes('mlb') && (
-          <section style={styles.section}>
-            <h2 style={styles.sectionTitle}>⚾ Major League Baseball</h2>
-            <div style={styles.emptyCard}>
-              MLB is currently in the offseason. Feed will auto-resume in Spring Training!
-            </div>
-          </section>
-        )}
-
         {Object.entries(NASCAR_SERIES).map(([id, series]) =>
           activePlugins.includes(id) ? (
             <section key={id} style={styles.section}>
@@ -921,6 +1096,29 @@ export default function SportsballDashboard() {
                       : isHistory
                         ? `No ${series.name} race on ${selectedDate}.`
                         : `No ${series.name} session on the schedule today.`}
+                  </div>
+                )}
+              </div>
+            </section>
+          ) : null
+        )}
+
+        {Object.entries(GOLF_TOURS).map(([id, tour]) =>
+          activePlugins.includes(id) ? (
+            <section key={id} style={styles.section}>
+              <h2 style={styles.sectionTitle}>⛳ {tour.name}</h2>
+              <div style={styles.cardsGrid}>
+                {golfFeeds[id].events.length > 0 ? (
+                  pinEventsFirst(golfFeeds[id].events, favorites).map((e) => (
+                    <GolfCard key={e.id} event={e} tourId={id} favorites={favorites} onToggleFavorite={toggleFavorite} />
+                  ))
+                ) : (
+                  <div style={styles.emptyCard}>
+                    {golfFeeds[id].loading
+                      ? 'Loading…'
+                      : isHistory
+                        ? `No ${tour.name} event on ${selectedDate}.`
+                        : `No ${tour.name} event this week.`}
                   </div>
                 )}
               </div>
