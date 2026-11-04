@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 /**
  * SPORTSBALL DASHBOARD v2
@@ -736,6 +736,100 @@ export function TickerBanner({ games = [] }) {
   );
 }
 
+// ---- Alerts for pinned teams / drivers / players: scores, starts and finals ----
+// Works while the app or tab is open (polling feeds it). A first sighting of a game is only a
+// baseline, so opening the app never fires a burst of old news.
+const ALERTS_KEY = 'sportsball.alertsOn';
+
+export function useAlertsSetting() {
+  const [on, setOn] = useState(() => {
+    try {
+      return localStorage.getItem(ALERTS_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggle = async () => {
+    const next = !on;
+    if (next && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      try {
+        await Notification.requestPermission();
+      } catch {
+        /* in-app toasts still work */
+      }
+    }
+    try {
+      localStorage.setItem(ALERTS_KEY, next ? '1' : '0');
+    } catch {
+      /* not remembered */
+    }
+    setOn(next);
+  };
+  return [on, toggle];
+}
+
+// candidates: [{ id, status: 'PREGAME'|'LIVE'|'FINAL', scoreKey, describe(kind, prev) -> {title, body} }]
+export function useScoreAlerts(candidates, enabled, onAlert) {
+  const prevRef = useRef(new Map());
+  useEffect(() => {
+    const seen = new Set();
+    candidates.forEach((c) => {
+      seen.add(c.id);
+      const p = prevRef.current.get(c.id);
+      if (p && enabled) {
+        let kind = null;
+        if (c.status === 'FINAL' && p.status !== 'FINAL') kind = 'final';
+        else if (c.status === 'LIVE' && p.status === 'PREGAME') kind = 'start';
+        else if (c.status !== 'PREGAME' && c.scoreKey !== p.scoreKey) kind = 'score';
+        if (kind) onAlert(c.describe(kind, p), c.id);
+      }
+      prevRef.current.set(c.id, c);
+    });
+    // Forget unpinned / gone games so pinning one later starts from a fresh baseline.
+    [...prevRef.current.keys()].forEach((k) => {
+      if (!seen.has(k)) prevRef.current.delete(k);
+    });
+  });
+}
+
+export function gameAlertCandidate(g) {
+  const { away, home } = gameTeams(g);
+  const num = (v) => Number(v) || 0;
+  return {
+    id: `g:${g.leagueSlug}:${g.id}`,
+    status: g.status,
+    scoreKey: `${away?.score}-${home?.score}`,
+    away,
+    home,
+    describe(kind, prev) {
+      const line = `${away?.code} ${away?.score} - ${home?.score} ${home?.code}`;
+      if (kind === 'start') return { title: `▶ ${g.league}: game started`, body: `${away?.name} at ${home?.name}` };
+      if (kind === 'final') return { title: `🏁 Final · ${g.league}`, body: line };
+      const scorer =
+        num(away?.score) > num(prev?.away?.score) ? away : num(home?.score) > num(prev?.home?.score) ? home : null;
+      return {
+        title: `${scorer ? `★ ${scorer.code} scores` : `Score update`} · ${g.league}`,
+        body: `${line}${g.summary?.primaryLabel ? ` · ${g.summary.primaryLabel}` : ''}`,
+      };
+    },
+  };
+}
+
+// Races and tournaments: start and final only (positions change too often to announce).
+export function fieldAlertCandidate({ id, status, title, pinned, noun }) {
+  const list = pinned.map((x) => `★ ${x.name} ${x.position ? `P${x.position}` : ''}${x.score ? ` (${x.score})` : ''}`).join(', ');
+  return {
+    id,
+    status,
+    scoreKey: '',
+    describe(kind) {
+      return kind === 'final'
+        ? { title: `🏁 Final · ${title}`, body: list }
+        : { title: `▶ ${noun} underway · ${title}`, body: list };
+    },
+  };
+}
+
 // Football games keep teams under details.football; other sports put them at game.teams.
 const gameTeams = (g) => g.teams || g.details?.football?.teams || {};
 
@@ -1072,6 +1166,59 @@ export default function SportsballDashboard() {
     ...Object.keys(TEAM_FEEDS).flatMap((id) => (activePlugins.includes(id) ? teamFeeds[id].games : [])),
   ];
 
+  const [alertsOn, toggleAlerts] = useAlertsSetting();
+  const [toasts, setToasts] = useState([]);
+  const pushAlert = (a, id) => {
+    const toast = { key: `${id}-${Date.now()}`, ...a };
+    setToasts((prev) => [...prev, toast].slice(-4));
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.key !== toast.key)), 9000);
+    try {
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        new Notification(a.title, { body: a.body, tag: id });
+      }
+    } catch {
+      /* some webviews cannot construct Notification: the toast above still shows */
+    }
+  };
+  const alertCandidates = isHistory
+    ? []
+    : [
+        ...allActiveGames.filter((g) => isFavoriteGame(g, favorites)).map(gameAlertCandidate),
+        ...Object.entries(NASCAR_SERIES).flatMap(([sid, sr]) =>
+          activePlugins.includes(sid)
+            ? nascarFeeds[sid].races
+                .map((r) => ({ r, pinned: r.drivers.filter((d) => favorites.includes(driverKey(d.name))) }))
+                .filter((x) => x.pinned.length)
+                .map(({ r, pinned }) =>
+                  fieldAlertCandidate({
+                    id: `r:${sid}:${r.id}`,
+                    status: r.phase === 'RESULT' ? 'FINAL' : r.phase === 'LIVE' || r.phase === 'QUALIFYING LIVE' ? 'LIVE' : 'PREGAME',
+                    title: r.title,
+                    pinned,
+                    noun: 'Race',
+                  })
+                )
+            : []
+        ),
+        ...Object.keys(GOLF_TOURS).flatMap((gid) =>
+          activePlugins.includes(gid)
+            ? golfFeeds[gid].events
+                .map((e) => ({ e, pinned: e.players.filter((pl) => favorites.includes(playerKey(pl.name))) }))
+                .filter((x) => x.pinned.length)
+                .map(({ e, pinned }) =>
+                  fieldAlertCandidate({
+                    id: `t:${gid}:${e.id}`,
+                    status: e.status === 'UPCOMING' ? 'PREGAME' : e.status,
+                    title: e.title,
+                    pinned,
+                    noun: 'Tournament',
+                  })
+                )
+            : []
+        ),
+      ];
+  useScoreAlerts(alertCandidates, alertsOn, pushAlert);
+
   const skipTo = (id) =>
     document.getElementById(`section-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
@@ -1108,6 +1255,14 @@ export default function SportsballDashboard() {
             </button>
           )}
         </div>
+        <button
+          style={{ ...styles.todayBtn, backgroundColor: alertsOn ? '#2f855a' : '#334155', marginRight: '12px' }}
+          onClick={toggleAlerts}
+          aria-pressed={alertsOn}
+          title="Alerts for pinned teams, drivers and players: scores, starts and finals"
+        >
+          🔔 Alerts {alertsOn ? 'on' : 'off'}
+        </button>
         <button style={styles.pluginMgrBtn} onClick={() => setIsModalOpen(true)}>
           ⚙️ Manage Plugins ({activePlugins.length})
         </button>
@@ -1222,6 +1377,15 @@ export default function SportsballDashboard() {
         )}
       </main>
 
+      <div style={styles.toastStack} aria-live="polite">
+        {toasts.map((t) => (
+          <div key={t.key} style={styles.toast}>
+            <div style={{ fontWeight: 'bold' }}>{t.title}</div>
+            <div style={styles.pluginDesc}>{t.body}</div>
+          </div>
+        ))}
+      </div>
+
       <PluginModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
@@ -1246,6 +1410,8 @@ const styles = {
   header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 32px', borderBottom: '1px solid #1e293b' },
   title: { margin: 0, fontSize: '24px' },
   subtitle: { margin: '4px 0 0', color: '#94a3b8', fontSize: '14px' },
+  toastStack: { position: 'fixed', right: '16px', bottom: '16px', display: 'flex', flexDirection: 'column', gap: '8px', zIndex: 2000, maxWidth: '340px' },
+  toast: { backgroundColor: '#1e293b', border: '1px solid #facc15', borderRadius: '10px', padding: '10px 14px', boxShadow: '0 4px 16px rgba(0,0,0,0.5)', fontSize: '13px' },
   dateControls: { display: 'flex', alignItems: 'center', gap: '8px', marginLeft: 'auto', marginRight: '16px' },
   dateLabel: { display: 'flex', alignItems: 'center', gap: '6px' },
   dateInput: { backgroundColor: '#1e293b', color: '#f8fafc', border: '1px solid #334155', borderRadius: '8px', padding: '8px 10px', colorScheme: 'dark' },
