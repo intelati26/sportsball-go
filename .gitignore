@@ -1,0 +1,12 @@
+node_modules
+dist
+src-tauri/target
+src-tauri/gen
+android/.gradle
+android/build
+android/app/build
+android/local.properties
+android/app/src/main/assets/public
+android/app/src/main/assets/capacitor*.json
+android/capacitor-cordova-android-plugins
+*.keystore

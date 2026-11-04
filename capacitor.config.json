@@ -1,0 +1,7 @@
+{
+  "appId": "app.sportsballgo.mobile",
+  "appName": "Sportsball Go",
+  "webDir": "dist",
+  "backgroundColor": "#0f172a",
+  "android": { "allowMixedContent": false }
+}
