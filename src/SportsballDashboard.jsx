@@ -98,6 +98,13 @@ export function useFootballScoreboard(league = 'nfl', pollIntervalMs = 5000, dat
             leagueSlug: league,
             sportSlug: 'football',
             regPeriods: 4,
+            progress: gameProgress({
+              state: statusType.state,
+              period: evt.status?.period,
+              clock: evt.status?.displayClock,
+              regPeriods: 4,
+              periodMins: 15,
+            }),
             title: evt.name,
             status: isLive ? 'LIVE' : statusType.state === 'post' ? 'FINAL' : 'PREGAME',
             summary: {
@@ -447,6 +454,14 @@ export function useTeamScoreboard(feedId, pollIntervalMs = 10000, date = '', ena
               secondaryLabel: '',
               scoreOrLeader: `${away.code} ${away.score} - ${home.score} ${home.code}`,
             },
+            progress: gameProgress({
+              state: statusType.state,
+              period: evt.status?.period,
+              clock: evt.status?.displayClock,
+              regPeriods: feed.regPeriods,
+              periodMins: periodMinutesFor(feed),
+              countsUp: feed.sport === 'soccer',
+            }),
             details: {},
             teams: { away, home },
           };
@@ -629,27 +644,84 @@ export function GolfCard({ event, tourId = 'pga', favorites = [], onToggleFavori
   );
 }
 
+// ---- How far through a game is (0..1), so the ticker can lead with games about to finish ----
+const parseClockSeconds = (clock) => {
+  if (!clock) return null;
+  const c = String(clock);
+  const mmss = c.match(/^(\d+):(\d+)/);
+  if (mmss) return Number(mmss[1]) * 60 + Number(mmss[2]);
+  const mins = c.match(/^(\d+)/); // soccer "67'" or hockey/basketball "12.3"
+  if (mins) return Number(c.replace(/[^0-9.]/g, '')) * (c.includes("'") ? 60 : 1);
+  return null;
+};
+
+export function gameProgress({ state, period = 0, clock, regPeriods, periodMins, countsUp = false }) {
+  if (state === 'post') return 1;
+  if (state !== 'in') return 0;
+  if (!regPeriods || !period) return 0.5;
+  if (period > regPeriods) return 0.99; // overtime / extras: as late as it gets
+  const secs = parseClockSeconds(clock);
+  const hasClock = Boolean(periodMins) && secs !== null;
+  // Soccer's clock runs the whole match (e.g. 67'): progress is minutes over regulation.
+  if (countsUp && hasClock) return Math.min(0.98, secs / (periodMins * regPeriods * 60));
+  // Otherwise the clock counts down within a period; with no clock (innings, sets) assume mid-period.
+  const within = hasClock ? 1 - Math.min(1, secs / (periodMins * 60)) : 0.5;
+  return Math.min(0.98, (period - 1 + within) / regPeriods);
+}
+
+const periodMinutesFor = (feed) =>
+  ({ hockey: 20, soccer: 45, football: 15, lacrosse: 15 })[feed.sport] ??
+  (feed.sport === 'basketball' ? (feed.regPeriods === 2 ? 20 : feed.league === 'nba' ? 12 : 10) : null);
+
+// Ticker order: live games nearest the finish first (pinned teams win ties), then the rest.
+export function tickerOrder(games, favorites = [], limit = 40) {
+  const live = games.filter((g) => g.status === 'LIVE');
+  const pool = live.length
+    ? live
+    : games.filter((g) => g.status === 'FINAL').concat(games.filter((g) => g.status === 'PREGAME'));
+  return pool
+    .map((g, i) => ({ g, i, fav: isFavoriteGame(g, favorites) }))
+    .sort((a, b) => (b.g.progress ?? 0) - (a.g.progress ?? 0) || Number(b.fav) - Number(a.fav) || a.i - b.i)
+    .map((x) => x.g)
+    .slice(0, limit);
+}
+
+const TICKER_CSS = `
+@keyframes sportsball-marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+.sportsball-marquee { display: flex; width: max-content; animation: sportsball-marquee var(--marquee-secs, 60s) linear infinite; }
+.sportsball-marquee:hover { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) { .sportsball-marquee { animation: none; } }
+`;
+
+// Scrolls on its own (pauses on hover/touch-hold). Pass games already ordered by priority.
 export function TickerBanner({ games = [] }) {
   if (!games || games.length === 0) return null;
-
+  const anyLive = games.some((g) => g.status === 'LIVE');
+  const items = games.map((g) => {
+    const isLive = g.status === 'LIVE';
+    return (
+      <div key={g.id} style={styles.tickerItem}>
+        <span style={{ ...styles.tickerStatus, backgroundColor: isLive ? '#e53e3e' : '#4a5568' }}>
+          {isLive ? '🔴 LIVE' : g.status}
+        </span>
+        <span style={styles.tickerLeague}>{g.league}</span>
+        <span style={styles.tickerScore}>{g.summary?.scoreOrLeader}</span>
+        {(g.summary?.secondaryLabel || (isLive && g.summary?.primaryLabel)) && (
+          <span style={styles.tickerDetail}>({g.summary.secondaryLabel || g.summary.primaryLabel})</span>
+        )}
+      </div>
+    );
+  });
+  // Two copies side by side so the loop is seamless; ~4 s per game keeps it readable.
   return (
     <div style={styles.tickerContainer}>
-      <div style={styles.tickerBadge}>LIVE TICKER</div>
-      <div style={styles.tickerScrollTrack}>
-        {games.map((g) => {
-          const isLive = g.status === 'LIVE';
-          return (
-            <div key={g.id} style={styles.tickerItem}>
-              <span style={{ ...styles.tickerStatus, backgroundColor: isLive ? '#e53e3e' : '#4a5568' }}>
-                {isLive ? '🔴 LIVE' : g.status}
-              </span>
-              <span style={styles.tickerScore}>{g.summary?.scoreOrLeader}</span>
-              {g.summary?.secondaryLabel && (
-                <span style={styles.tickerDetail}>({g.summary.secondaryLabel})</span>
-              )}
-            </div>
-          );
-        })}
+      <style>{TICKER_CSS}</style>
+      <div style={styles.tickerBadge}>{anyLive ? 'LIVE · NEAREST FINISH FIRST' : 'SCORES'}</div>
+      <div style={{ overflow: 'hidden', flex: 1 }}>
+        <div className="sportsball-marquee" style={{ '--marquee-secs': `${Math.max(20, games.length * 4)}s` }}>
+          <div style={styles.tickerHalf}>{items}</div>
+          <div style={styles.tickerHalf} aria-hidden="true">{items}</div>
+        </div>
       </div>
     </div>
   );
@@ -1002,7 +1074,7 @@ export default function SportsballDashboard() {
 
   return (
     <div style={styles.container}>
-      {!isHistory && <TickerBanner games={pinFavoritesFirst(allActiveGames, favorites)} />}
+      {!isHistory && <TickerBanner games={tickerOrder(allActiveGames, favorites)} />}
 
       <header style={styles.header}>
         <div>
@@ -1156,6 +1228,8 @@ const styles = {
   tickerContainer: { display: 'flex', alignItems: 'center', backgroundColor: '#1e293b', borderBottom: '1px solid #334155', height: '40px', overflow: 'hidden' },
   tickerBadge: { backgroundColor: '#e53e3e', color: '#fff', fontWeight: 'bold', fontSize: '11px', padding: '0 12px', height: '100%', display: 'flex', alignItems: 'center' },
   tickerScrollTrack: { display: 'flex', gap: '24px', overflowX: 'auto', padding: '0 16px', whiteSpace: 'nowrap', alignItems: 'center' },
+  tickerHalf: { display: 'flex', gap: '24px', alignItems: 'center', flexShrink: 0, paddingRight: '24px', paddingLeft: '8px' },
+  tickerLeague: { fontSize: '10px', color: '#64748b', fontWeight: 'bold' },
   tickerItem: { display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' },
   tickerStatus: { fontSize: '10px', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' },
   tickerScore: { fontWeight: '600' },
