@@ -52,6 +52,7 @@ export function useFootballScoreboard(league = 'nfl', pollIntervalMs = 5000, dat
             id: evt.id,
             sport: 'Football',
             league: league.toUpperCase(),
+            leagueSlug: league,
             title: evt.name,
             status: isLive ? 'LIVE' : statusType.state === 'post' ? 'FINAL' : 'PREGAME',
             summary: {
@@ -73,12 +74,14 @@ export function useFootballScoreboard(league = 'nfl', pollIntervalMs = 5000, dat
                     name: awayTeam.team?.displayName || 'Away',
                     logo: awayTeam.team?.logo,
                     score: awayTeam.score || 0,
+                    linescores: (awayTeam.linescores || []).map((l) => l.displayValue ?? l.value),
                   },
                   home: {
                     code: homeTeam.team?.abbreviation || 'HOME',
                     name: homeTeam.team?.displayName || 'Home',
                     logo: homeTeam.team?.logo,
                     score: homeTeam.score || 0,
+                    linescores: (homeTeam.linescores || []).map((l) => l.displayValue ?? l.value),
                   }
                 }
               }
@@ -282,15 +285,191 @@ export function TickerBanner({ games = [] }) {
   );
 }
 
-export function FootballCard({ game }) {
+// ---- Favorites (pinned teams), remembered on this device ----
+const FAV_KEY = 'sportsball.favoriteTeams';
+export const teamKey = (leagueSlug, code) => `${leagueSlug}:${code}`;
+
+export function useFavorites() {
+  const [favorites, setFavorites] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(FAV_KEY) || '[]');
+    } catch {
+      return [];
+    }
+  });
+  const toggleFavorite = (key) =>
+    setFavorites((prev) => {
+      const next = prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key];
+      try {
+        localStorage.setItem(FAV_KEY, JSON.stringify(next));
+      } catch {
+        /* storage unavailable: pins last for this session only */
+      }
+      return next;
+    });
+  return { favorites, toggleFavorite };
+}
+
+const isFavoriteGame = (g, favorites) => {
+  const { away, home } = g.details?.football?.teams || {};
+  return (
+    favorites.includes(teamKey(g.leagueSlug, away?.code)) ||
+    favorites.includes(teamKey(g.leagueSlug, home?.code))
+  );
+};
+
+// Pinned teams' games first; otherwise keep ESPN's order.
+export const pinFavoritesFirst = (games, favorites) => [
+  ...games.filter((g) => isFavoriteGame(g, favorites)),
+  ...games.filter((g) => !isFavoriteGame(g, favorites)),
+];
+
+// ---- Box score: line score from the scoreboard, team stats + leaders from the game summary ----
+function useGameSummary(game, enabled) {
+  const [state, setState] = useState({ loading: false, error: null, data: null });
+  useEffect(() => {
+    if (!enabled) return undefined;
+    let isMounted = true;
+    setState({ loading: true, error: null, data: null });
+    (async () => {
+      try {
+        const host = ['site', 'api', 'espn', 'com'].join('.');
+        const res = await fetch(
+          `https://${host}/apis/site/v2/sports/football/${game.leagueSlug}/summary?event=${game.id}`
+        );
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+        const data = await res.json();
+        if (isMounted) setState({ loading: false, error: null, data });
+      } catch (err) {
+        if (isMounted) setState({ loading: false, error: err.message, data: null });
+      }
+    })();
+    return () => {
+      isMounted = false;
+    };
+  }, [enabled, game.id, game.leagueSlug]);
+  return state;
+}
+
+export function BoxScore({ game }) {
+  const { loading, error, data } = useGameSummary(game, true);
+  const { away, home } = game.details?.football?.teams || {};
+  const periods = Math.max(away?.linescores?.length || 0, home?.linescores?.length || 0);
+
+  const boxTeams = data?.boxscore?.teams || [];
+  const statsFor = (code) =>
+    boxTeams.find((t) => t.team?.abbreviation === code)?.statistics || [];
+  const awayStats = statsFor(away?.code);
+  const homeStats = statsFor(home?.code);
+
+  const playerGroups = data?.boxscore?.players || [];
+  const leaders = playerGroups.flatMap((tp) =>
+    (tp.statistics || []).map((cat) => {
+      const top = cat.athletes?.[0];
+      return top
+        ? {
+            key: `${tp.team?.abbreviation}-${cat.name}`,
+            team: tp.team?.abbreviation,
+            category: cat.name,
+            name: top.athlete?.displayName,
+            line: (top.stats || []).join(' · '),
+          }
+        : null;
+    })
+  ).filter(Boolean);
+
+  return (
+    <div style={styles.boxScore}>
+      {periods > 0 && (
+        <table style={styles.boxTable}>
+          <thead>
+            <tr>
+              <th style={styles.boxTeamCell} />
+              {Array.from({ length: periods }, (_, i) => (
+                <th key={i} style={styles.boxNum}>{i < 4 ? i + 1 : 'OT'}</th>
+              ))}
+              <th style={styles.boxNum}>T</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[away, home].map((t) => (
+              <tr key={t?.code}>
+                <td style={styles.boxTeamCell}>{t?.code}</td>
+                {Array.from({ length: periods }, (_, i) => (
+                  <td key={i} style={styles.boxNum}>{t?.linescores?.[i] ?? '–'}</td>
+                ))}
+                <td style={{ ...styles.boxNum, fontWeight: 800 }}>{t?.score}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {loading && <div style={styles.pluginDesc}>Loading box score…</div>}
+      {error && <div style={styles.pluginDesc}>Full box score unavailable ({error}).</div>}
+
+      {awayStats.length > 0 && (
+        <table style={styles.boxTable}>
+          <thead>
+            <tr>
+              <th style={styles.boxNum}>{away?.code}</th>
+              <th style={styles.boxStatCell} />
+              <th style={styles.boxNum}>{home?.code}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {awayStats.map((st, i) => (
+              <tr key={st.name || i}>
+                <td style={styles.boxNum}>{st.displayValue}</td>
+                <td style={styles.boxStatCell}>{st.label || st.name}</td>
+                <td style={styles.boxNum}>
+                  {homeStats.find((h) => h.name === st.name)?.displayValue ?? '–'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {leaders.length > 0 && (
+        <div style={styles.leaderList}>
+          {leaders.map((l) => (
+            <div key={l.key} style={styles.leaderRow}>
+              <span style={{ ...styles.headlineTag, width: '110px' }}>{l.team} {l.category}</span>
+              <span>{l.name} <span style={styles.pluginDesc}>{l.line}</span></span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function FootballCard({ game, favorites = [], onToggleFavorite }) {
   const fb = game.details?.football || {};
   const { away, home } = fb.teams || {};
   const isLive = game.status === 'LIVE';
+  const [showBox, setShowBox] = useState(false);
+  const pinned = isFavoriteGame(game, favorites);
+  const star = (t) => {
+    const k = teamKey(game.leagueSlug, t?.code);
+    const on = favorites.includes(k);
+    return (
+      <button
+        style={{ ...styles.starBtn, color: on ? '#facc15' : '#64748b' }}
+        onClick={() => onToggleFavorite?.(k)}
+        title={on ? `Unpin ${t?.name}` : `Pin ${t?.name} to the top`}
+        aria-pressed={on}
+      >
+        {on ? '★' : '☆'}
+      </button>
+    );
+  };
 
   return (
     <div style={{
       ...styles.card,
-      borderColor: fb.inRedZone ? '#f56565' : '#2d3748',
+      borderColor: fb.inRedZone ? '#f56565' : pinned ? '#facc15' : '#2d3748',
       boxShadow: fb.inRedZone ? '0 0 12px rgba(245, 101, 101, 0.4)' : 'none'
     }}>
       <div style={styles.cardHeader}>
@@ -307,6 +486,7 @@ export function FootballCard({ game }) {
       <div style={styles.matchupRow}>
         <div style={styles.teamCol}>
           {away?.logo ? <img src={away.logo} alt={away.code} style={styles.logo} /> : <div style={styles.logoPlaceholder}>{away?.code?.[0]}</div>}
+          {star(away)}
           <span style={styles.teamName}>{away?.name}</span>
           <span style={styles.teamScore}>{away?.score}</span>
         </div>
@@ -314,6 +494,7 @@ export function FootballCard({ game }) {
         <div style={styles.teamCol}>
           <span style={styles.teamScore}>{home?.score}</span>
           <span style={styles.teamName}>{home?.name}</span>
+          {star(home)}
           {home?.logo ? <img src={home.logo} alt={home.code} style={styles.logo} /> : <div style={styles.logoPlaceholder}>{home?.code?.[0]}</div>}
         </div>
       </div>
@@ -323,6 +504,13 @@ export function FootballCard({ game }) {
           <span>🏈 {game.summary.secondaryLabel}</span>
         </div>
       )}
+
+      {game.status !== 'PREGAME' && (
+        <button style={styles.boxBtn} onClick={() => setShowBox((v) => !v)}>
+          {showBox ? 'Hide box score' : '📋 Box score'}
+        </button>
+      )}
+      {showBox && <BoxScore game={game} />}
     </div>
   );
 }
@@ -377,6 +565,7 @@ export default function SportsballDashboard() {
   const [activePlugins, setActivePlugins] = useState(['nfl', 'cfb', 'nascar', 'nascar-oreilly', 'nascar-truck']);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
+  const { favorites, toggleFavorite } = useFavorites();
   const [selectedDate, setSelectedDate] = useState(''); // '' = today / live
   const isHistory = selectedDate !== '';
   const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD, local time
@@ -403,7 +592,7 @@ export default function SportsballDashboard() {
 
   return (
     <div style={styles.container}>
-      {!isHistory && <TickerBanner games={allActiveGames} />}
+      {!isHistory && <TickerBanner games={pinFavoritesFirst(allActiveGames, favorites)} />}
 
       <header style={styles.header}>
         <div>
@@ -439,7 +628,9 @@ export default function SportsballDashboard() {
             <h2 style={styles.sectionTitle}>🏈 NFL Football</h2>
             <div style={styles.cardsGrid}>
               {nflGames.length > 0 ? (
-                nflGames.map((g) => <FootballCard key={g.id} game={g} />)
+                pinFavoritesFirst(nflGames, favorites).map((g) => (
+                  <FootballCard key={g.id} game={g} favorites={favorites} onToggleFavorite={toggleFavorite} />
+                ))
               ) : (
                 <div style={styles.emptyCard}>{nflLoading ? 'Loading…' : emptyText('NFL')}</div>
               )}
@@ -452,7 +643,9 @@ export default function SportsballDashboard() {
             <h2 style={styles.sectionTitle}>🎓 College Football (CFB)</h2>
             <div style={styles.cardsGrid}>
               {cfbGames.length > 0 ? (
-                cfbGames.map((g) => <FootballCard key={g.id} game={g} />)
+                pinFavoritesFirst(cfbGames, favorites).map((g) => (
+                  <FootballCard key={g.id} game={g} favorites={favorites} onToggleFavorite={toggleFavorite} />
+                ))
               ) : (
                 <div style={styles.emptyCard}>{cfbLoading ? 'Loading…' : emptyText('CFB')}</div>
               )}
@@ -521,6 +714,15 @@ const styles = {
   driverRow: { display: 'flex', gap: '10px' },
   headlineTag: { width: '56px', color: '#94a3b8', fontWeight: 'bold', fontSize: '12px', textTransform: 'uppercase' },
   driverPos: { width: '22px', color: '#94a3b8', fontWeight: 'bold', textAlign: 'right' },
+  starBtn: { background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px', padding: 0, lineHeight: 1 },
+  boxBtn: { backgroundColor: '#334155', color: '#fff', border: 'none', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600', fontSize: '12px' },
+  boxScore: { display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '12px' },
+  boxTable: { width: '100%', borderCollapse: 'collapse' },
+  boxTeamCell: { textAlign: 'left', fontWeight: 'bold', padding: '3px 6px' },
+  boxStatCell: { textAlign: 'center', color: '#94a3b8', padding: '3px 6px' },
+  boxNum: { textAlign: 'center', padding: '3px 6px' },
+  leaderList: { display: 'flex', flexDirection: 'column', gap: '4px' },
+  leaderRow: { display: 'flex', gap: '10px' },
   pluginMgrBtn: { backgroundColor: '#334155', color: '#fff', border: 'none', padding: '10px 16px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600' },
   mainGrid: { padding: '32px', display: 'flex', flexDirection: 'column', gap: '32px' },
   section: { display: 'flex', flexDirection: 'column', gap: '16px' },
