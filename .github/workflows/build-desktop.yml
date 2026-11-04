@@ -68,9 +68,28 @@ jobs:
           (cd src-tauri/target/release && zip ../../../dist-artifacts/SportsballGo-Linux-Portable.zip SportsballGo)
 
       - uses: actions/upload-artifact@v4
+        if: matrix.platform == 'windows'
         with:
-          name: SportsballGo-${{ matrix.platform }}
-          path: dist-artifacts/*
+          name: SportsballGo-Windows-Installer
+          path: dist-artifacts/*.exe
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform == 'windows'
+        with:
+          name: SportsballGo-Windows-Portable
+          path: dist-artifacts/SportsballGo-Windows-Portable.zip
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform == 'linux'
+        with:
+          name: SportsballGo-Linux-AppImage
+          path: dist-artifacts/*.AppImage
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform == 'linux'
+        with:
+          name: SportsballGo-Linux-Portable
+          path: dist-artifacts/SportsballGo-Linux-Portable.zip
           retention-days: 14
 
       - name: Publish to the "latest" release (files with their extensions)
