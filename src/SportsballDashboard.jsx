@@ -112,6 +112,110 @@ export function useFootballScoreboard(league = 'nfl', pollIntervalMs = 5000, dat
   return { games, loading, error };
 }
 
+// NASCAR Cup Series via ESPN's racing scoreboard (same date rules as football).
+// Field names are read defensively: ESPN omits fields between sessions.
+export function useNascarScoreboard(pollIntervalMs = 15000, date = '') {
+  const [races, setRaces] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    setLoading(true);
+    const fetchRaces = async () => {
+      try {
+        const host = ['site', 'api', 'espn', 'com'].join('.');
+        const url = `https://${host}/apis/site/v2/sports/racing/nascar-premier/scoreboard${
+          date ? `?dates=${date.replace(/-/g, '')}` : ''
+        }`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+        const data = await res.json();
+
+        const normalized = (data.events || []).map((evt) => {
+          const comps = evt.competitions || [];
+          // The race itself, else the most relevant session (practice/qualifying).
+          const race =
+            comps.find((c) => /race/i.test(c.type?.abbreviation || c.type?.text || '')) ||
+            comps[comps.length - 1] ||
+            {};
+          const statusType = race.status?.type || evt.status?.type || {};
+          const isLive = statusType.state === 'in';
+          const drivers = (race.competitors || [])
+            .map((c) => ({
+              id: c.id || c.athlete?.id,
+              position: Number(c.order ?? c.position ?? 0) || 0,
+              name: c.athlete?.displayName || c.athlete?.shortName || 'Driver',
+              number: c.vehicle?.number || c.athlete?.number || '',
+              winner: !!c.winner,
+            }))
+            .sort((a, b) => (a.position || 99) - (b.position || 99))
+            .slice(0, 10);
+
+          return {
+            id: evt.id,
+            title: evt.name || evt.shortName || 'NASCAR Cup Series',
+            track: evt.circuit?.fullName || evt.venues?.[0]?.fullName || '',
+            session: race.type?.text || race.type?.abbreviation || '',
+            status: isLive ? 'LIVE' : statusType.state === 'post' ? 'FINAL' : 'UPCOMING',
+            detail: statusType.detail || statusType.description || '',
+            lap: race.status?.period || 0,
+            drivers,
+          };
+        });
+
+        if (isMounted) {
+          setRaces(normalized);
+          setError(null);
+          setLoading(false);
+        }
+      } catch (err) {
+        if (isMounted) {
+          setRaces([]);
+          setError(err.message);
+          setLoading(false);
+        }
+      }
+    };
+
+    fetchRaces();
+    const interval = date ? null : setInterval(fetchRaces, pollIntervalMs);
+    return () => {
+      isMounted = false;
+      if (interval) clearInterval(interval);
+    };
+  }, [pollIntervalMs, date]);
+
+  return { races, loading, error };
+}
+
+export function NascarCard({ race }) {
+  const statusColor = race.status === 'LIVE' ? '#e53e3e' : race.status === 'FINAL' ? '#2f855a' : '#4a5568';
+  return (
+    <div style={styles.card}>
+      <div style={styles.cardHeader}>
+        <span style={styles.leagueTag}>NASCAR CUP{race.session ? ` · ${race.session.toUpperCase()}` : ''}</span>
+        <span style={{ ...styles.statusTag, backgroundColor: statusColor }}>
+          {race.status === 'LIVE' ? '🔴 LIVE' : race.status}
+        </span>
+      </div>
+      <div style={styles.teamName}>{race.title}</div>
+      {race.track && <div style={styles.pluginDesc}>{race.track}</div>}
+      {race.detail && <div style={styles.situationBox}>{race.detail}</div>}
+      {race.drivers.length > 0 && (
+        <ol style={styles.driverList}>
+          {race.drivers.map((d) => (
+            <li key={d.id || d.name} style={styles.driverRow}>
+              <span style={styles.driverPos}>{d.position || '–'}</span>
+              <span>{d.number ? `#${d.number} ` : ''}{d.name}{d.winner ? ' 🏆' : ''}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
 export function TickerBanner({ games = [] }) {
   if (!games || games.length === 0) return null;
 
@@ -228,7 +332,7 @@ export function PluginModal({ isOpen, onClose, activePlugins, onTogglePlugin }) 
 }
 
 export default function SportsballDashboard() {
-  const [activePlugins, setActivePlugins] = useState(['nfl', 'cfb']);
+  const [activePlugins, setActivePlugins] = useState(['nfl', 'cfb', 'nascar']);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const [selectedDate, setSelectedDate] = useState(''); // '' = today / live
@@ -237,6 +341,7 @@ export default function SportsballDashboard() {
 
   const { games: nflGames, loading: nflLoading } = useFootballScoreboard('nfl', 5000, selectedDate);
   const { games: cfbGames, loading: cfbLoading } = useFootballScoreboard('college-football', 10000, selectedDate);
+  const { races: nascarRaces, loading: nascarLoading } = useNascarScoreboard(15000, selectedDate);
   const emptyText = (name) =>
     isHistory ? `No ${name} games on ${selectedDate}.` : `No live ${name} games right now.`;
 
@@ -322,8 +427,18 @@ export default function SportsballDashboard() {
         {activePlugins.includes('nascar') && (
           <section style={styles.section}>
             <h2 style={styles.sectionTitle}>🏎️ NASCAR Cup Series</h2>
-            <div style={styles.emptyCard}>
-              No active session. Next race timing feed will launch during practice/qualifying.
+            <div style={styles.cardsGrid}>
+              {nascarRaces.length > 0 ? (
+                nascarRaces.map((r) => <NascarCard key={r.id} race={r} />)
+              ) : (
+                <div style={styles.emptyCard}>
+                  {nascarLoading
+                    ? 'Loading…'
+                    : isHistory
+                      ? `No NASCAR Cup race on ${selectedDate}.`
+                      : 'No NASCAR Cup session on the schedule today.'}
+                </div>
+              )}
             </div>
           </section>
         )}
@@ -355,6 +470,9 @@ const styles = {
   dateLabel: { display: 'flex', alignItems: 'center', gap: '6px' },
   dateInput: { backgroundColor: '#1e293b', color: '#f8fafc', border: '1px solid #334155', borderRadius: '8px', padding: '8px 10px', colorScheme: 'dark' },
   todayBtn: { backgroundColor: '#2563eb', color: '#fff', border: 'none', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600' },
+  driverList: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '13px' },
+  driverRow: { display: 'flex', gap: '10px' },
+  driverPos: { width: '22px', color: '#94a3b8', fontWeight: 'bold', textAlign: 'right' },
   pluginMgrBtn: { backgroundColor: '#334155', color: '#fff', border: 'none', padding: '10px 16px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600' },
   mainGrid: { padding: '32px', display: 'flex', flexDirection: 'column', gap: '32px' },
   section: { display: 'flex', flexDirection: 'column', gap: '16px' },
