@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Sportsball Go</string>
+    <string name="title_activity_main">Sportsball Go</string>
+    <string name="package_name">app.sportsballgo.mobile</string>
+    <string name="custom_url_scheme">app.sportsballgo.mobile</string>
+</resources>
