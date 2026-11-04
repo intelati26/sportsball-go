@@ -67,25 +67,25 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: matrix.platform == 'windows'
         with:
-          name: SportsballGo-Windows-Installer
+          name: SportsballGo-Windows-Installer.exe
           path: dist-artifacts/*.exe
           retention-days: 14
       - uses: actions/upload-artifact@v4
         if: matrix.platform == 'windows'
         with:
-          name: SportsballGo-Windows-Portable
+          name: SportsballGo-Windows-Portable.zip
           path: dist-artifacts/SportsballGo-Windows-Portable.zip
           retention-days: 14
       - uses: actions/upload-artifact@v4
         if: matrix.platform == 'linux'
         with:
-          name: SportsballGo-Linux-AppImage
+          name: SportsballGo-Linux.AppImage
           path: dist-artifacts/*.AppImage
           retention-days: 14
       - uses: actions/upload-artifact@v4
         if: matrix.platform == 'linux'
         with:
-          name: SportsballGo-Linux-Portable
+          name: SportsballGo-Linux-Portable.zip
           path: dist-artifacts/SportsballGo-Linux-Portable.zip
           retention-days: 14
 
@@ -123,7 +123,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SportsballGo-Android-APK
+          name: SportsballGo-Android-debug.apk
           path: dist-artifacts/SportsballGo-Android-debug.apk
           retention-days: 14
 
