@@ -7,6 +7,9 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build (${{ matrix.platform }})
@@ -61,7 +64,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           mkdir -p dist-artifacts
-          cp src-tauri/target/release/bundle/appimage/*.AppImage dist-artifacts/ 2>/dev/null || true
+          cp src-tauri/target/release/bundle/appimage/*.AppImage dist-artifacts/
           (cd src-tauri/target/release && zip ../../../dist-artifacts/SportsballGo-Linux-Portable.zip SportsballGo)
 
       - uses: actions/upload-artifact@v4
@@ -69,3 +72,12 @@ jobs:
           name: SportsballGo-${{ matrix.platform }}
           path: dist-artifacts/*
           retention-days: 14
+
+      - name: Publish to the "latest" release (files with their extensions)
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          prerelease: true
+          files: dist-artifacts/*
