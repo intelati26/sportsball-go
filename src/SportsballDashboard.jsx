@@ -10,18 +10,21 @@ import React, { useState, useEffect } from 'react';
  *  - Offseason status for MLB & NASCAR
  */
 
-export function useFootballScoreboard(league = 'nfl', pollIntervalMs = 5000) {
+// date: 'YYYY-MM-DD' for a past day (history), or '' for today's live board.
+export function useFootballScoreboard(league = 'nfl', pollIntervalMs = 5000, date = '') {
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     let isMounted = true;
+    setLoading(true);
+    setError(null);
     const fetchScores = async () => {
       try {
         const domainParts = ['site', 'api', 'espn', 'com'];
         const host = domainParts.join('.');
-        const url = `https://${host}/apis/site/v2/sports/football/${league}/scoreboard`;
+        const url = `https://${host}/apis/site/v2/sports/football/${league}/scoreboard${date ? `?dates=${date.replace(/-/g, '')}` : ''}`;
         const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
         const data = await res.json();
@@ -85,10 +88,12 @@ export function useFootballScoreboard(league = 'nfl', pollIntervalMs = 5000) {
 
         if (isMounted) {
           setGames(normalized);
+          setError(null);
           setLoading(false);
         }
       } catch (err) {
         if (isMounted) {
+          setGames([]);
           setError(err.message);
           setLoading(false);
         }
@@ -96,12 +101,13 @@ export function useFootballScoreboard(league = 'nfl', pollIntervalMs = 5000) {
     };
 
     fetchScores();
-    const interval = setInterval(fetchScores, pollIntervalMs);
+    // A finished day never changes, so only poll the live board.
+    const interval = date ? null : setInterval(fetchScores, pollIntervalMs);
     return () => {
       isMounted = false;
-      clearInterval(interval);
+      if (interval) clearInterval(interval);
     };
-  }, [league, pollIntervalMs]);
+  }, [league, pollIntervalMs, date]);
 
   return { games, loading, error };
 }
@@ -225,8 +231,14 @@ export default function SportsballDashboard() {
   const [activePlugins, setActivePlugins] = useState(['nfl', 'cfb']);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
-  const { games: nflGames } = useFootballScoreboard('nfl', 5000);
-  const { games: cfbGames } = useFootballScoreboard('college-football', 10000);
+  const [selectedDate, setSelectedDate] = useState(''); // '' = today / live
+  const isHistory = selectedDate !== '';
+  const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD, local time
+
+  const { games: nflGames, loading: nflLoading } = useFootballScoreboard('nfl', 5000, selectedDate);
+  const { games: cfbGames, loading: cfbLoading } = useFootballScoreboard('college-football', 10000, selectedDate);
+  const emptyText = (name) =>
+    isHistory ? `No ${name} games on ${selectedDate}.` : `No live ${name} games right now.`;
 
   const allActiveGames = [
     ...(activePlugins.includes('nfl') ? nflGames : []),
@@ -241,12 +253,30 @@ export default function SportsballDashboard() {
 
   return (
     <div style={styles.container}>
-      <TickerBanner games={allActiveGames} />
+      {!isHistory && <TickerBanner games={allActiveGames} />}
 
       <header style={styles.header}>
         <div>
           <h1 style={styles.title}>🏟️ Sportsball Dashboard</h1>
           <p style={styles.subtitle}>Open-source live sports scoreboard & local ticker</p>
+        </div>
+        <div style={styles.dateControls}>
+          <label style={styles.dateLabel}>
+            📅
+            <input
+              type="date"
+              style={styles.dateInput}
+              value={selectedDate}
+              max={todayStr}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              aria-label="Show games on this date"
+            />
+          </label>
+          {isHistory && (
+            <button style={styles.todayBtn} onClick={() => setSelectedDate('')}>
+              Today
+            </button>
+          )}
         </div>
         <button style={styles.pluginMgrBtn} onClick={() => setIsModalOpen(true)}>
           ⚙️ Manage Plugins ({activePlugins.length})
@@ -261,7 +291,7 @@ export default function SportsballDashboard() {
               {nflGames.length > 0 ? (
                 nflGames.map((g) => <FootballCard key={g.id} game={g} />)
               ) : (
-                <div style={styles.emptyCard}>No live NFL games right now.</div>
+                <div style={styles.emptyCard}>{nflLoading ? 'Loading…' : emptyText('NFL')}</div>
               )}
             </div>
           </section>
@@ -274,7 +304,7 @@ export default function SportsballDashboard() {
               {cfbGames.length > 0 ? (
                 cfbGames.map((g) => <FootballCard key={g.id} game={g} />)
               ) : (
-                <div style={styles.emptyCard}>No live CFB games right now.</div>
+                <div style={styles.emptyCard}>{cfbLoading ? 'Loading…' : emptyText('CFB')}</div>
               )}
             </div>
           </section>
@@ -321,6 +351,10 @@ const styles = {
   header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 32px', borderBottom: '1px solid #1e293b' },
   title: { margin: 0, fontSize: '24px' },
   subtitle: { margin: '4px 0 0', color: '#94a3b8', fontSize: '14px' },
+  dateControls: { display: 'flex', alignItems: 'center', gap: '8px', marginLeft: 'auto', marginRight: '16px' },
+  dateLabel: { display: 'flex', alignItems: 'center', gap: '6px' },
+  dateInput: { backgroundColor: '#1e293b', color: '#f8fafc', border: '1px solid #334155', borderRadius: '8px', padding: '8px 10px', colorScheme: 'dark' },
+  todayBtn: { backgroundColor: '#2563eb', color: '#fff', border: 'none', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600' },
   pluginMgrBtn: { backgroundColor: '#334155', color: '#fff', border: 'none', padding: '10px 16px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600' },
   mainGrid: { padding: '32px', display: 'flex', flexDirection: 'column', gap: '32px' },
   section: { display: 'flex', flexDirection: 'column', gap: '16px' },
