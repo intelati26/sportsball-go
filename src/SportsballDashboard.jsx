@@ -212,17 +212,26 @@ export function useNascarSeries(seriesId = 'nascar', pollIntervalMs = 15000, dat
 
         const normalized = (data.events || []).map((evt) => {
           const comps = evt.competitions || [];
-          const qual = comps.find((c) => /qual/i.test(c.type?.abbreviation || c.type?.text || ''));
-          const race = comps.find((c) => /race/i.test(c.type?.abbreviation || c.type?.text || ''));
-          const stateOf = (c) => c?.status?.type?.state;
+          const typeText = (c) =>
+            [c?.type?.abbreviation, c?.type?.text, c?.type?.name, c?.description].filter(Boolean).join(' ');
+          const qual = comps.find((c) => /qual/i.test(typeText(c)));
+          // ESPN does not always label the race: an unlabelled last session is the race.
+          const lastComp = comps[comps.length - 1];
+          const race =
+            comps.find((c) => /race/i.test(typeText(c))) || (lastComp && lastComp !== qual ? lastComp : undefined);
+          const evtState = evt.status?.type?.state;
+          const stateOf = (c) => c?.status?.type?.state || (c === race ? evtState : undefined);
 
           // Phase: the race decides once it has started; otherwise qualifying.
           let phase = 'UPCOMING';
-          let source = qual || race || comps[comps.length - 1];
+          let source = qual || race || lastComp;
           if (stateOf(race) === 'post') { phase = 'RESULT'; source = race; }
           else if (stateOf(race) === 'in') { phase = 'LIVE'; source = race; }
           else if (stateOf(qual) === 'in') { phase = 'QUALIFYING LIVE'; source = qual; }
           else if (stateOf(qual) === 'post') { phase = 'QUALIFYING'; source = qual; }
+
+          // Drivers: from the session shown, else from any session that lists competitors.
+          const driverSource = source?.competitors?.length ? source : comps.find((c) => c.competitors?.length);
 
           const poleDriver = toDrivers(qual)[0];
           return {
@@ -230,8 +239,8 @@ export function useNascarSeries(seriesId = 'nascar', pollIntervalMs = 15000, dat
             title: evt.name || evt.shortName || 'NASCAR race',
             track: evt.circuit?.fullName || evt.venues?.[0]?.fullName || '',
             phase,
-            detail: source?.status?.type?.detail || source?.status?.type?.description || '',
-            drivers: toDrivers(source),
+            detail: source?.status?.type?.detail || source?.status?.type?.description || evt.status?.type?.detail || '',
+            drivers: toDrivers(driverSource),
             pole: poleDriver && stateOf(qual) === 'post' ? poleDriver : null,
           };
         });
