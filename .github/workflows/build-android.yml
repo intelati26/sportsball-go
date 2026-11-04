@@ -42,12 +42,6 @@ jobs:
           mkdir -p dist-artifacts
           cp android/app/build/outputs/apk/debug/app-debug.apk dist-artifacts/SportsballGo-Android-debug.apk
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: SportsballGo-android
-          path: dist-artifacts/*
-          retention-days: 14
-
       - name: Publish to the "latest" release (files with their extensions)
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
