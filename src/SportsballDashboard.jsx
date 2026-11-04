@@ -112,20 +112,39 @@ export function useFootballScoreboard(league = 'nfl', pollIntervalMs = 5000, dat
   return { games, loading, error };
 }
 
-// NASCAR Cup Series via ESPN's racing scoreboard (same date rules as football).
+// NASCAR national series via ESPN's racing scoreboard (same date rules as football).
 // Field names are read defensively: ESPN omits fields between sessions.
-export function useNascarScoreboard(pollIntervalMs = 15000, date = '') {
+export const NASCAR_SERIES = {
+  nascar: { slug: 'nascar-premier', name: 'NASCAR Cup Series', short: 'CUP', top: 5 },
+  'nascar-oreilly': { slug: 'nascar-secondary', name: "NASCAR O'Reilly Auto Parts Series", short: "O'REILLY", top: 1 },
+  'nascar-truck': { slug: 'nascar-truck', name: 'NASCAR Truck Series', short: 'TRUCK', top: 1 },
+};
+
+const toDrivers = (comp = {}) =>
+  (comp.competitors || [])
+    .map((c) => ({
+      id: c.id || c.athlete?.id,
+      position: Number(c.order ?? c.position ?? 0) || 0,
+      name: c.athlete?.displayName || c.athlete?.shortName || 'Driver',
+      number: c.vehicle?.number || c.athlete?.number || '',
+      winner: !!c.winner,
+    }))
+    .sort((a, b) => (a.position || 99) - (b.position || 99));
+
+export function useNascarSeries(seriesId = 'nascar', pollIntervalMs = 15000, date = '') {
   const [races, setRaces] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const slug = NASCAR_SERIES[seriesId]?.slug;
 
   useEffect(() => {
+    if (!slug) return undefined;
     let isMounted = true;
     setLoading(true);
     const fetchRaces = async () => {
       try {
         const host = ['site', 'api', 'espn', 'com'].join('.');
-        const url = `https://${host}/apis/site/v2/sports/racing/nascar-premier/scoreboard${
+        const url = `https://${host}/apis/site/v2/sports/racing/${slug}/scoreboard${
           date ? `?dates=${date.replace(/-/g, '')}` : ''
         }`;
         const res = await fetch(url);
@@ -134,33 +153,27 @@ export function useNascarScoreboard(pollIntervalMs = 15000, date = '') {
 
         const normalized = (data.events || []).map((evt) => {
           const comps = evt.competitions || [];
-          // The race itself, else the most relevant session (practice/qualifying).
-          const race =
-            comps.find((c) => /race/i.test(c.type?.abbreviation || c.type?.text || '')) ||
-            comps[comps.length - 1] ||
-            {};
-          const statusType = race.status?.type || evt.status?.type || {};
-          const isLive = statusType.state === 'in';
-          const drivers = (race.competitors || [])
-            .map((c) => ({
-              id: c.id || c.athlete?.id,
-              position: Number(c.order ?? c.position ?? 0) || 0,
-              name: c.athlete?.displayName || c.athlete?.shortName || 'Driver',
-              number: c.vehicle?.number || c.athlete?.number || '',
-              winner: !!c.winner,
-            }))
-            .sort((a, b) => (a.position || 99) - (b.position || 99))
-            .slice(0, 10);
+          const qual = comps.find((c) => /qual/i.test(c.type?.abbreviation || c.type?.text || ''));
+          const race = comps.find((c) => /race/i.test(c.type?.abbreviation || c.type?.text || ''));
+          const stateOf = (c) => c?.status?.type?.state;
 
+          // Phase: the race decides once it has started; otherwise qualifying.
+          let phase = 'UPCOMING';
+          let source = qual || race || comps[comps.length - 1];
+          if (stateOf(race) === 'post') { phase = 'RESULT'; source = race; }
+          else if (stateOf(race) === 'in') { phase = 'LIVE'; source = race; }
+          else if (stateOf(qual) === 'in') { phase = 'QUALIFYING LIVE'; source = qual; }
+          else if (stateOf(qual) === 'post') { phase = 'QUALIFYING'; source = qual; }
+
+          const poleDriver = toDrivers(qual)[0];
           return {
             id: evt.id,
-            title: evt.name || evt.shortName || 'NASCAR Cup Series',
+            title: evt.name || evt.shortName || 'NASCAR race',
             track: evt.circuit?.fullName || evt.venues?.[0]?.fullName || '',
-            session: race.type?.text || race.type?.abbreviation || '',
-            status: isLive ? 'LIVE' : statusType.state === 'post' ? 'FINAL' : 'UPCOMING',
-            detail: statusType.detail || statusType.description || '',
-            lap: race.status?.period || 0,
-            drivers,
+            phase,
+            detail: source?.status?.type?.detail || source?.status?.type?.description || '',
+            drivers: toDrivers(source),
+            pole: poleDriver && stateOf(qual) === 'post' ? poleDriver : null,
           };
         });
 
@@ -184,33 +197,60 @@ export function useNascarScoreboard(pollIntervalMs = 15000, date = '') {
       isMounted = false;
       if (interval) clearInterval(interval);
     };
-  }, [pollIntervalMs, date]);
+  }, [slug, pollIntervalMs, date]);
 
   return { races, loading, error };
 }
 
-export function NascarCard({ race }) {
-  const statusColor = race.status === 'LIVE' ? '#e53e3e' : race.status === 'FINAL' ? '#2f855a' : '#4a5568';
+const driverLabel = (d) => `${d.number ? `#${d.number} ` : ''}${d.name}`;
+
+export function NascarCard({ race, seriesId = 'nascar' }) {
+  const series = NASCAR_SERIES[seriesId];
+  const isLive = race.phase === 'LIVE' || race.phase === 'QUALIFYING LIVE';
+  const color = isLive ? '#e53e3e' : race.phase === 'RESULT' ? '#2f855a' : '#4a5568';
+  const top = race.drivers.slice(0, series.top);
+
+  // Cup: top 5 of whichever session applies. O'Reilly / Truck: one headline driver.
+  const headline = { 'QUALIFYING': 'Pole', 'QUALIFYING LIVE': 'Pole (live)', LIVE: 'Leader', RESULT: 'Winner' }[race.phase];
+  const label = { 'QUALIFYING': 'Qualifying', 'QUALIFYING LIVE': 'Qualifying · live', LIVE: 'Live', RESULT: 'Result' }[race.phase];
+  const winner = race.phase === 'RESULT' ? race.drivers.find((d) => d.winner) || race.drivers[0] : null;
+
   return (
     <div style={styles.card}>
       <div style={styles.cardHeader}>
-        <span style={styles.leagueTag}>NASCAR CUP{race.session ? ` · ${race.session.toUpperCase()}` : ''}</span>
-        <span style={{ ...styles.statusTag, backgroundColor: statusColor }}>
-          {race.status === 'LIVE' ? '🔴 LIVE' : race.status}
+        <span style={styles.leagueTag}>{series.short}{label ? ` · ${label.toUpperCase()}` : ''}</span>
+        <span style={{ ...styles.statusTag, backgroundColor: color }}>
+          {isLive ? '🔴 LIVE' : race.phase === 'RESULT' ? 'FINAL' : race.phase === 'UPCOMING' ? 'UPCOMING' : 'POLE SET'}
         </span>
       </div>
       <div style={styles.teamName}>{race.title}</div>
       {race.track && <div style={styles.pluginDesc}>{race.track}</div>}
       {race.detail && <div style={styles.situationBox}>{race.detail}</div>}
-      {race.drivers.length > 0 && (
+
+      {series.top > 1 && top.length > 0 && (
         <ol style={styles.driverList}>
-          {race.drivers.map((d) => (
+          {top.map((d) => (
             <li key={d.id || d.name} style={styles.driverRow}>
               <span style={styles.driverPos}>{d.position || '–'}</span>
-              <span>{d.number ? `#${d.number} ` : ''}{d.name}{d.winner ? ' 🏆' : ''}</span>
+              <span>{driverLabel(d)}{d.winner ? ' 🏆' : ''}</span>
             </li>
           ))}
         </ol>
+      )}
+
+      {series.top === 1 && headline && top.length > 0 && (
+        <div style={styles.driverList}>
+          <div style={styles.driverRow}>
+            <span style={styles.headlineTag}>{headline}</span>
+            <span>{driverLabel(winner || top[0])}{winner ? ' 🏆' : ''}</span>
+          </div>
+          {race.phase !== 'QUALIFYING' && race.phase !== 'QUALIFYING LIVE' && race.pole && (
+            <div style={styles.driverRow}>
+              <span style={styles.headlineTag}>Pole</span>
+              <span>{driverLabel(race.pole)}</span>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -291,7 +331,9 @@ const AVAILABLE_PLUGINS = [
   { id: 'nfl', name: 'NFL Football', category: 'Gridiron', desc: 'Live scores, clock & down/distance' },
   { id: 'cfb', name: 'College Football (CFB)', category: 'Gridiron', desc: 'AP Top 25 & FBS games' },
   { id: 'mlb', name: 'MLB Baseball', category: 'Baseball', desc: 'StatsAPI pitch-by-pitch (Offseason)' },
-  { id: 'nascar', name: 'NASCAR Cup Series', category: 'Motorsport', desc: 'Live flag status & leaderboard towers' },
+  { id: 'nascar', name: 'NASCAR Cup Series', category: 'Motorsport', desc: 'Qualifying / live / result top 5' },
+  { id: 'nascar-oreilly', name: "NASCAR O'Reilly Series", category: 'Motorsport', desc: 'Pole / live leader / winner' },
+  { id: 'nascar-truck', name: 'NASCAR Truck Series', category: 'Motorsport', desc: 'Pole / live leader / winner' },
 ];
 
 export function PluginModal({ isOpen, onClose, activePlugins, onTogglePlugin }) {
@@ -332,7 +374,7 @@ export function PluginModal({ isOpen, onClose, activePlugins, onTogglePlugin }) 
 }
 
 export default function SportsballDashboard() {
-  const [activePlugins, setActivePlugins] = useState(['nfl', 'cfb', 'nascar']);
+  const [activePlugins, setActivePlugins] = useState(['nfl', 'cfb', 'nascar', 'nascar-oreilly', 'nascar-truck']);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   const [selectedDate, setSelectedDate] = useState(''); // '' = today / live
@@ -341,7 +383,10 @@ export default function SportsballDashboard() {
 
   const { games: nflGames, loading: nflLoading } = useFootballScoreboard('nfl', 5000, selectedDate);
   const { games: cfbGames, loading: cfbLoading } = useFootballScoreboard('college-football', 10000, selectedDate);
-  const { races: nascarRaces, loading: nascarLoading } = useNascarScoreboard(15000, selectedDate);
+  const nascarCup = useNascarSeries('nascar', 15000, selectedDate);
+  const nascarOreilly = useNascarSeries('nascar-oreilly', 15000, selectedDate);
+  const nascarTruck = useNascarSeries('nascar-truck', 15000, selectedDate);
+  const nascarFeeds = { nascar: nascarCup, 'nascar-oreilly': nascarOreilly, 'nascar-truck': nascarTruck };
   const emptyText = (name) =>
     isHistory ? `No ${name} games on ${selectedDate}.` : `No live ${name} games right now.`;
 
@@ -424,23 +469,25 @@ export default function SportsballDashboard() {
           </section>
         )}
 
-        {activePlugins.includes('nascar') && (
-          <section style={styles.section}>
-            <h2 style={styles.sectionTitle}>🏎️ NASCAR Cup Series</h2>
-            <div style={styles.cardsGrid}>
-              {nascarRaces.length > 0 ? (
-                nascarRaces.map((r) => <NascarCard key={r.id} race={r} />)
-              ) : (
-                <div style={styles.emptyCard}>
-                  {nascarLoading
-                    ? 'Loading…'
-                    : isHistory
-                      ? `No NASCAR Cup race on ${selectedDate}.`
-                      : 'No NASCAR Cup session on the schedule today.'}
-                </div>
-              )}
-            </div>
-          </section>
+        {Object.entries(NASCAR_SERIES).map(([id, series]) =>
+          activePlugins.includes(id) ? (
+            <section key={id} style={styles.section}>
+              <h2 style={styles.sectionTitle}>🏎️ {series.name}</h2>
+              <div style={styles.cardsGrid}>
+                {nascarFeeds[id].races.length > 0 ? (
+                  nascarFeeds[id].races.map((r) => <NascarCard key={r.id} race={r} seriesId={id} />)
+                ) : (
+                  <div style={styles.emptyCard}>
+                    {nascarFeeds[id].loading
+                      ? 'Loading…'
+                      : isHistory
+                        ? `No ${series.name} race on ${selectedDate}.`
+                        : `No ${series.name} session on the schedule today.`}
+                  </div>
+                )}
+              </div>
+            </section>
+          ) : null
         )}
       </main>
 
@@ -472,6 +519,7 @@ const styles = {
   todayBtn: { backgroundColor: '#2563eb', color: '#fff', border: 'none', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600' },
   driverList: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '13px' },
   driverRow: { display: 'flex', gap: '10px' },
+  headlineTag: { width: '56px', color: '#94a3b8', fontWeight: 'bold', fontSize: '12px', textTransform: 'uppercase' },
   driverPos: { width: '22px', color: '#94a3b8', fontWeight: 'bold', textAlign: 'right' },
   pluginMgrBtn: { backgroundColor: '#334155', color: '#fff', border: 'none', padding: '10px 16px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600' },
   mainGrid: { padding: '32px', display: 'flex', flexDirection: 'column', gap: '32px' },
