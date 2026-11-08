@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "android:sync": "vite build && cap sync android",
-    "android:open": "cap open android"
+    "android:open": "cap open android",
+    "test": "node --test test/"
   },
   "dependencies": {
     "react": "^18.3.1",

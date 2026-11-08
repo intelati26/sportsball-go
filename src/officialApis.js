@@ -62,6 +62,7 @@ export function normalizeMlb(data, feed) {
     return {
       id: String(g.gamePk),
       source: 'official',
+      start: g.gameDate,
       sportSlug: feed.sport,
       leagueSlug: feed.league,
       regPeriods: feed.regPeriods,
@@ -127,6 +128,7 @@ export function normalizeNhl(data, feed) {
     return {
       id: String(g.id),
       source: 'official',
+      start: g.startTimeUTC,
       sportSlug: feed.sport,
       leagueSlug: feed.league,
       regPeriods: feed.regPeriods,
@@ -154,4 +156,46 @@ export function normalizeNhl(data, feed) {
 async function fetchNhl(feed, date) {
   const data = await getJson(`https://api-web.nhle.com/v1/score/${date || 'now'}`);
   return normalizeNhl(data, feed);
+}
+
+// ---------------- NASCAR: cf.nascar.com live feed ----------------
+// The official live feed covers whichever race is running right now, for all three national
+// series. It has no schedule/results history, so ESPN still serves past dates, qualifying
+// and upcoming races.
+export const NASCAR_OFFICIAL_SERIES = { nascar: 1, 'nascar-oreilly': 2, 'nascar-truck': 3 };
+
+// Feed names carry rookie/champion markers ("Brandon Jones (C)", "Brent Crews # (C)").
+const cleanDriverName = (n = '') => n.replace(/\s*\((?:[A-Z]+|i)\)/g, '').replace(/\s*[#*]\s*$/, '').replace(/\s+#\s*/g, ' ').trim();
+
+export function normalizeNascarLive(feed, seriesNum) {
+  if (!feed || feed.series_id !== seriesNum) return null;
+  const running = feed.lap_number > 0 && feed.laps_to_go > 0 && feed.flag_state < 8 && (feed.vehicles || []).length > 0;
+  if (!running) return null;
+  const drivers = feed.vehicles
+    .map((v) => ({
+      id: v.driver?.driver_id,
+      position: Number(v.running_position) || 0,
+      name: cleanDriverName(v.driver?.full_name) || 'Driver',
+      number: v.vehicle_number || '',
+      winner: false,
+    }))
+    .sort((a, b) => (a.position || 99) - (b.position || 99));
+  return {
+    id: `nascar-live:${feed.race_id}`,
+    source: 'official',
+    title: feed.run_name || 'NASCAR race',
+    track: feed.track_name || '',
+    phase: 'LIVE',
+    detail: `Lap ${feed.lap_number}/${feed.laps_in_race}`,
+    drivers,
+    pole: null,
+  };
+}
+
+export async function fetchNascarLive(seriesId) {
+  const num = NASCAR_OFFICIAL_SERIES[seriesId];
+  if (!num) return null;
+  const feed = await getJson('https://cf.nascar.com/live/feeds/live-feed.json');
+  const race = normalizeNascarLive(feed, num);
+  return race ? [race] : null;
 }

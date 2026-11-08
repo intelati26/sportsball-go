@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { gameProgress } from './progress.js';
-import { OFFICIAL_SOURCES } from './officialApis.js';
+import { OFFICIAL_SOURCES, fetchNascarLive } from './officialApis.js';
+import { SPORT_SORTS, GAME_SORTS, RANGES, sortGames, orderSections, isToday } from './sorting.js';
 
 /**
  * SPORTSBALL DASHBOARD v2
@@ -57,6 +58,9 @@ export function startPolling(fetchOnce, { fastMs, idleMs = IDLE_POLL_MS, once = 
   };
 }
 
+const OFFICIAL_RETRY_MS = 5 * 60000;
+const officialDownUntil = {};
+
 export function useFootballScoreboard(league = 'nfl', pollIntervalMs = 5000, date = '') {
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -96,6 +100,7 @@ export function useFootballScoreboard(league = 'nfl', pollIntervalMs = 5000, dat
 
           return {
             id: evt.id,
+            start: evt.date,
             sport: 'Football',
             league: league.toUpperCase(),
             leagueSlug: league,
@@ -205,6 +210,23 @@ export function useNascarSeries(seriesId = 'nascar', pollIntervalMs = 15000, dat
     setRaces([]);
     const fetchRaces = async () => {
       try {
+        // Today's board: the official NASCAR live feed wins while a race is running.
+        if (!date && Date.now() >= (officialDownUntil[`race:${seriesId}`] || 0)) {
+          try {
+            const live = await fetchNascarLive(seriesId);
+            if (live) {
+              if (isMounted) {
+                setRaces(live);
+                setError(null);
+                setLoading(false);
+              }
+              return true;
+            }
+            officialDownUntil[`race:${seriesId}`] = 0;
+          } catch (e) {
+            officialDownUntil[`race:${seriesId}`] = Date.now() + OFFICIAL_RETRY_MS;
+          }
+        }
         const host = ['site', 'api', 'espn', 'com'].join('.');
         const url = `https://${host}/apis/site/v2/sports/racing/${slug}/scoreboard${
           date ? `?dates=${date.replace(/-/g, '')}` : ''
@@ -270,7 +292,7 @@ export function useNascarSeries(seriesId = 'nascar', pollIntervalMs = 15000, dat
       isMounted = false;
       stop();
     };
-  }, [slug, pollIntervalMs, date, enabled]);
+  }, [slug, seriesId, pollIntervalMs, date, enabled]);
 
   return { races, loading, error };
 }
@@ -416,9 +438,6 @@ export const TEAM_FEEDS = {
 // Shown on by default; the rest are one tap away in the plugin manager.
 const DEFAULT_PLUGINS = ['nfl', 'cfb', 'ncaab', 'nba', 'nhl', 'nascar', 'nascar-oreilly', 'nascar-truck'];
 
-const OFFICIAL_RETRY_MS = 5 * 60000;
-const officialDownUntil = {};
-
 // ESPN scoreboard (backup source) for team-vs-team feeds.
 async function fetchEspnTeamGames(feed, date) {
   const host = ['site', 'api', 'espn', 'com'].join('.');
@@ -447,6 +466,7 @@ async function fetchEspnTeamGames(feed, date) {
     return {
       id: evt.id,
       source: 'espn',
+      start: evt.date,
       sportSlug: feed.sport,
       leagueSlug: feed.league,
       regPeriods: feed.regPeriods,
@@ -1193,6 +1213,55 @@ export function PluginModal({ isOpen, onClose, activePlugins, onTogglePlugin }) 
   );
 }
 
+// A remembered choice from a fixed list of ids (localStorage may be unavailable).
+function usePref(key, fallback, allowed) {
+  const [value, setValue] = useState(() => {
+    try {
+      const v = localStorage.getItem(key);
+      return allowed.includes(v) ? v : fallback;
+    } catch {
+      return fallback;
+    }
+  });
+  const set = (v) => {
+    setValue(v);
+    try {
+      localStorage.setItem(key, v);
+    } catch {
+      /* storage unavailable: the choice lasts for this session only */
+    }
+  };
+  return [value, set];
+}
+
+// Which sport sections are folded up (remembered).
+function useCollapsed() {
+  const KEY = 'sportsball.collapsed';
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem(KEY) || '[]');
+      return Array.isArray(v) ? v : [];
+    } catch {
+      return [];
+    }
+  });
+  const save = (list) => {
+    setCollapsed(list);
+    try {
+      localStorage.setItem(KEY, JSON.stringify(list));
+    } catch {
+      /* storage unavailable: lasts for this session only */
+    }
+  };
+  return {
+    collapsed,
+    isCollapsed: (id) => collapsed.includes(id),
+    toggle: (id) => save(collapsed.includes(id) ? collapsed.filter((x) => x !== id) : [...collapsed, id]),
+    expand: (id) => collapsed.includes(id) && save(collapsed.filter((x) => x !== id)),
+    setAll: (ids) => save(ids),
+  };
+}
+
 export default function SportsballDashboard() {
   const [activePlugins, setActivePlugins] = useState(DEFAULT_PLUGINS);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -1227,13 +1296,80 @@ export default function SportsballDashboard() {
     ])
   );
   const emptyText = (name) =>
-    isHistory ? `No ${name} games on ${selectedDate}.` : `No live ${name} games right now.`;
+    isHistory ? `No ${name} games on ${selectedDate}.` : todayOnly ? `No ${name} games today. Switch to the week view for the rest.` : `No live ${name} games right now.`;
 
   const allActiveGames = [
     ...(activePlugins.includes('nfl') ? nflGames : []),
     ...(activePlugins.includes('cfb') ? cfbGames : []),
     ...Object.keys(TEAM_FEEDS).flatMap((id) => (activePlugins.includes(id) ? teamFeeds[id].games : [])),
   ];
+
+  // ---- Sorting: which sports lead, and how games order inside each sport ----
+  const [sportSort, setSportSort] = usePref('sportsball.sportSort', 'default', SPORT_SORTS.map((x) => x.id));
+  const [gameSort, setGameSort] = usePref('sportsball.gameSort', 'fav', GAME_SORTS.map((x) => x.id));
+  // Week overview is the default view; today-only narrows to today's games (and anything live).
+  const [range, setRange] = usePref('sportsball.range', 'week', RANGES.map((x) => x.id));
+  const todayOnly = range === 'today' && !isHistory;
+  const inRange = (list) => (todayOnly ? list.filter((g) => isToday(g)) : list);
+  const isFav = (g) => isFavoriteGame(g, favorites);
+  const sortList = (list) => sortGames(list, gameSort, isFav);
+  const gameItems = (list) => list.map((g) => ({ status: g.status, pinned: isFav(g) }));
+  const raceStatus = (r) => (r.phase === 'LIVE' || r.phase === 'QUALIFYING LIVE' ? 'LIVE' : r.phase === 'RESULT' ? 'FINAL' : 'PREGAME');
+  const sectionItems = {
+    nfl: gameItems(inRange(nflGames)),
+    cfb: gameItems(inRange(cfbGames)),
+    ...Object.fromEntries(Object.keys(TEAM_FEEDS).map((id) => [id, gameItems(inRange(teamFeeds[id].games))])),
+    ...Object.fromEntries(
+      Object.keys(NASCAR_SERIES).map((id) => [
+        id,
+        nascarFeeds[id].races.map((r) => ({ status: raceStatus(r), pinned: raceHasPinnedDriver(r, favorites) })),
+      ])
+    ),
+    ...Object.fromEntries(
+      Object.keys(GOLF_TOURS).map((id) => [
+        id,
+        golfFeeds[id].events.map((e) => ({
+          status: e.status === 'UPCOMING' ? 'PREGAME' : e.status,
+          pinned: eventHasPinnedPlayer(e, favorites),
+        })),
+      ])
+    ),
+  };
+  const sectionIds = AVAILABLE_PLUGINS.map((pl) => pl.id).filter((id) => activePlugins.includes(id));
+  const sectionOrder = orderSections(sectionIds.map((id) => ({ id, items: sectionItems[id] || [] })), isHistory ? 'default' : sportSort);
+  const orderOf = (id) => ({ order: sectionOrder.indexOf(id) });
+
+  // Collapse a sport, or show only what is live right now.
+  const fold = useCollapsed();
+  const [activeOnlyPref, setActiveOnlyPref] = usePref('sportsball.activeOnly', 'off', ['on', 'off']);
+  const activeOnly = activeOnlyPref === 'on' && !isHistory; // nothing is live on a past date
+  const liveCount = (id) => (sectionItems[id] || []).filter((x) => x.status === 'LIVE').length;
+  const showSection = (id) => activePlugins.includes(id) && (!activeOnly || liveCount(id) > 0);
+  const onlyLive = (list, statusOf = (x) => x.status) => {
+    const ranged = inRange(list);
+    return activeOnly ? ranged.filter((x) => statusOf(x) === 'LIVE') : ranged;
+  };
+  const gridOf = (id) => ({ ...styles.cardsGrid, ...(fold.isCollapsed(id) ? { display: 'none' } : {}) });
+  const sectionHead = (id, title) => {
+    const open = !fold.isCollapsed(id);
+    const total = (sectionItems[id] || []).length;
+    const live = liveCount(id);
+    return (
+      <h2 style={styles.sectionTitle}>
+        <button
+          style={styles.sectionToggle}
+          onClick={() => fold.toggle(id)}
+          aria-expanded={open}
+          title={open ? 'Collapse this sport' : 'Expand this sport'}
+        >
+          <span aria-hidden="true">{open ? '▾' : '▸'}</span> {title}
+        </button>
+        <span style={styles.sectionCount}>
+          {live > 0 ? `${live} live · ` : ''}{total} {total === 1 ? 'game' : 'games'}
+        </span>
+      </h2>
+    );
+  };
 
   const [alertsOn, toggleAlerts] = useAlertsSetting();
   const [toasts, setToasts] = useState([]);
@@ -1295,8 +1431,10 @@ export default function SportsballDashboard() {
     }
   }, [favorites, activePlugins, nativeReady]);
 
-  const skipTo = (id) =>
-    document.getElementById(`section-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const skipTo = (id) => {
+    fold.expand(id);
+    setTimeout(() => document.getElementById(`section-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
+  };
 
   const togglePlugin = (id) => {
     setActivePlugins((prev) =>
@@ -1354,11 +1492,55 @@ export default function SportsballDashboard() {
         </button>
       </header>
 
+      <div style={styles.sortBar}>
+        <select
+          style={styles.sortSelect}
+          value={range}
+          onChange={(e) => setRange(e.target.value)}
+          aria-label="Date range"
+          disabled={isHistory}
+        >
+          {RANGES.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+        </select>
+        <select
+          style={styles.sortSelect}
+          value={sportSort}
+          onChange={(e) => setSportSort(e.target.value)}
+          aria-label="Sport order"
+          disabled={isHistory}
+        >
+          {SPORT_SORTS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+        </select>
+        <select
+          style={styles.sortSelect}
+          value={gameSort}
+          onChange={(e) => setGameSort(e.target.value)}
+          aria-label="Game order within each sport"
+        >
+          {GAME_SORTS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+        </select>
+        <button
+          style={{ ...styles.sortSelect, cursor: 'pointer', backgroundColor: activeOnly ? '#2f855a' : '#1e293b' }}
+          onClick={() => setActiveOnlyPref(activeOnlyPref === 'on' ? 'off' : 'on')}
+          aria-pressed={activeOnly}
+          disabled={isHistory}
+          title="Hide finished and upcoming games; sports with nothing live are hidden"
+        >
+          🔴 Active only {activeOnly ? 'on' : 'off'}
+        </button>
+        <button
+          style={{ ...styles.sortSelect, cursor: 'pointer' }}
+          onClick={() => fold.setAll(fold.collapsed.length < sectionOrder.length ? [...sectionOrder] : [])}
+        >
+          {fold.collapsed.length < sectionOrder.length ? '▸ Collapse all' : '▾ Expand all'}
+        </button>
+      </div>
+
       <nav style={styles.skipNav} aria-label="Skip to a widget">
         <button style={styles.skipBtn} onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
           ↑ Top
         </button>
-        {AVAILABLE_PLUGINS.filter((pl) => activePlugins.includes(pl.id)).map((pl) => (
+        {sectionOrder.filter(showSection).map((id) => AVAILABLE_PLUGINS.find((pl) => pl.id === id)).filter(Boolean).map((pl) => (
           <button key={pl.id} style={styles.skipBtn} onClick={() => skipTo(pl.id)}>
             {pl.name}
           </button>
@@ -1366,12 +1548,12 @@ export default function SportsballDashboard() {
       </nav>
 
       <main style={styles.mainGrid}>
-        {activePlugins.includes('nfl') && (
-          <section id="section-nfl" style={styles.section}>
-            <h2 style={styles.sectionTitle}>🏈 NFL Football</h2>
-            <div style={styles.cardsGrid}>
-              {nflGames.length > 0 ? (
-                pinFavoritesFirst(nflGames, favorites).map((g) => (
+        {showSection('nfl') && (
+          <section id="section-nfl" style={{ ...styles.section, ...orderOf('nfl') }}>
+            {sectionHead('nfl', '🏈 NFL Football')}
+            <div style={gridOf('nfl')}>
+              {onlyLive(nflGames).length > 0 ? (
+                sortList(onlyLive(nflGames)).map((g) => (
                   <FootballCard key={g.id} game={g} favorites={favorites} onToggleFavorite={toggleFavorite} />
                 ))
               ) : (
@@ -1381,12 +1563,12 @@ export default function SportsballDashboard() {
           </section>
         )}
 
-        {activePlugins.includes('cfb') && (
-          <section id="section-cfb" style={styles.section}>
-            <h2 style={styles.sectionTitle}>🎓 College Football (CFB)</h2>
-            <div style={styles.cardsGrid}>
-              {cfbGames.length > 0 ? (
-                pinFavoritesFirst(cfbGames, favorites).map((g) => (
+        {showSection('cfb') && (
+          <section id="section-cfb" style={{ ...styles.section, ...orderOf('cfb') }}>
+            {sectionHead('cfb', '🎓 College Football (CFB)')}
+            <div style={gridOf('cfb')}>
+              {onlyLive(cfbGames).length > 0 ? (
+                sortList(onlyLive(cfbGames)).map((g) => (
                   <FootballCard key={g.id} game={g} favorites={favorites} onToggleFavorite={toggleFavorite} />
                 ))
               ) : (
@@ -1398,17 +1580,17 @@ export default function SportsballDashboard() {
 
         {Object.keys(TEAM_FEEDS).map((id) => {
           const { games: list, loading: isLoading } = teamFeeds[id];
-          return activePlugins.includes(id) ? (
-            <section key={id} id={`section-${id}`} style={styles.section}>
-              <h2 style={styles.sectionTitle}>{TEAM_FEEDS[id].icon} {TEAM_FEEDS[id].label}</h2>
-              <div style={styles.cardsGrid}>
-                {list.length > 0 ? (
-                  pinFavoritesFirst(list, favorites).map((g) => (
+          return showSection(id) ? (
+            <section key={id} id={`section-${id}`} style={{ ...styles.section, ...orderOf(id) }}>
+              {sectionHead(id, `${TEAM_FEEDS[id].icon} ${TEAM_FEEDS[id].label}`)}
+              <div style={gridOf(id)}>
+                {onlyLive(list).length > 0 ? (
+                  sortList(onlyLive(list)).map((g) => (
                     <FootballCard key={g.id} game={g} favorites={favorites} onToggleFavorite={toggleFavorite} />
                   ))
                 ) : (
                   <div style={styles.emptyCard}>
-                    {isLoading ? 'Loading…' : isHistory ? `No ${TEAM_FEEDS[id].label} games on ${selectedDate}.` : `No ${TEAM_FEEDS[id].label} games today.`}
+                    {isLoading ? 'Loading…' : isHistory ? `No ${TEAM_FEEDS[id].label} games on ${selectedDate}.` : `No ${TEAM_FEEDS[id].label} games today.${todayOnly ? ' Switch to the week view for the rest.' : ''}`}
                   </div>
                 )}
               </div>
@@ -1417,12 +1599,12 @@ export default function SportsballDashboard() {
         })}
 
         {Object.entries(NASCAR_SERIES).map(([id, series]) =>
-          activePlugins.includes(id) ? (
-            <section key={id} id={`section-${id}`} style={styles.section}>
-              <h2 style={styles.sectionTitle}>🏎️ {series.name}</h2>
-              <div style={styles.cardsGrid}>
+          showSection(id) ? (
+            <section key={id} id={`section-${id}`} style={{ ...styles.section, ...orderOf(id) }}>
+              {sectionHead(id, `🏎️ ${series.name}`)}
+              <div style={gridOf(id)}>
                 {nascarFeeds[id].races.length > 0 ? (
-                  pinRacesFirst(nascarFeeds[id].races, favorites).map((r) => (
+                  pinRacesFirst(onlyLive(nascarFeeds[id].races, raceStatus), favorites).map((r) => (
                     <NascarCard key={r.id} race={r} seriesId={id} favorites={favorites} onToggleFavorite={toggleFavorite} />
                   ))
                 ) : (
@@ -1440,12 +1622,12 @@ export default function SportsballDashboard() {
         )}
 
         {Object.entries(GOLF_TOURS).map(([id, tour]) =>
-          activePlugins.includes(id) ? (
-            <section key={id} id={`section-${id}`} style={styles.section}>
-              <h2 style={styles.sectionTitle}>⛳ {tour.name}</h2>
-              <div style={styles.cardsGrid}>
+          showSection(id) ? (
+            <section key={id} id={`section-${id}`} style={{ ...styles.section, ...orderOf(id) }}>
+              {sectionHead(id, `⛳ ${tour.name}`)}
+              <div style={gridOf(id)}>
                 {golfFeeds[id].events.length > 0 ? (
-                  pinEventsFirst(golfFeeds[id].events, favorites).map((e) => (
+                  pinEventsFirst(onlyLive(golfFeeds[id].events), favorites).map((e) => (
                     <GolfCard key={e.id} event={e} tourId={id} favorites={favorites} onToggleFavorite={toggleFavorite} />
                   ))
                 ) : (
@@ -1517,10 +1699,14 @@ const styles = {
   leaderRow: { display: 'flex', gap: '10px' },
   pluginMgrBtn: { backgroundColor: '#334155', color: '#fff', border: 'none', padding: '10px 16px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600' },
   mainGrid: { padding: '32px', display: 'flex', flexDirection: 'column', gap: '32px' },
+  sortBar: { display: 'flex', gap: '8px', flexWrap: 'wrap', padding: '10px 32px 0' },
+  sortSelect: { backgroundColor: '#1e293b', color: '#f8fafc', border: '1px solid #334155', borderRadius: '8px', padding: '6px 10px', fontSize: '12px', fontWeight: '600' },
   skipNav: { position: 'sticky', top: 0, zIndex: 50, display: 'flex', gap: '8px', overflowX: 'auto', padding: '10px 32px', backgroundColor: '#0f172a', borderBottom: '1px solid #1e293b' },
   skipBtn: { flex: '0 0 auto', backgroundColor: '#1e293b', color: '#cbd5e1', border: '1px solid #334155', borderRadius: '999px', padding: '6px 12px', cursor: 'pointer', fontSize: '12px', fontWeight: '600', whiteSpace: 'nowrap' },
   section: { scrollMarginTop: '64px', display: 'flex', flexDirection: 'column', gap: '16px' },
-  sectionTitle: { fontSize: '18px', color: '#cbd5e1', margin: 0 },
+  sectionTitle: { fontSize: '18px', color: '#cbd5e1', margin: 0, display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' },
+  sectionToggle: { background: 'none', border: 'none', color: 'inherit', font: 'inherit', cursor: 'pointer', padding: 0, textAlign: 'left' },
+  sectionCount: { fontSize: '12px', color: '#94a3b8', fontWeight: 'normal' },
   cardsGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' },
   card: { backgroundColor: '#1e293b', borderRadius: '12px', padding: '16px', border: '1px solid #334155', display: 'flex', flexDirection: 'column', gap: '12px' },
   cardHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
