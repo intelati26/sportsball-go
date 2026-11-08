@@ -28,7 +28,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Persistent foreground service: polls ESPN for the pinned teams, drivers and players and posts
+ * Persistent foreground service: polls the official league APIs (NHL, MLB; ESPN is the backup) for the pinned teams, drivers and players and posts
  * a notification for scoring plays, starts and finals. Fast while something is live, slow when
  * idle, and backing off on errors (same rules as the app).
  */
@@ -129,12 +129,129 @@ public class WatcherService extends Service {
             }
         }
         for (Map.Entry<String, Set<String>> entry : codesByUrl.entrySet()) {
-            live |= pollTeams(entry.getKey(), leagueByUrl.get(entry.getKey()), entry.getValue());
+            String league = leagueByUrl.get(entry.getKey());
+            Boolean official = null;
+            Long downUntil = officialDownUntil.get(league);
+            if (downUntil == null || System.currentTimeMillis() >= downUntil) {
+                try {
+                    official = pollOfficial(league, entry.getValue());
+                } catch (Exception e) {
+                    // Official feed failed: back it off and use ESPN, the backup.
+                    officialDownUntil.put(league, System.currentTimeMillis() + 300000L);
+                }
+            }
+            live |= official != null ? official : pollTeams(entry.getKey(), league, entry.getValue());
         }
 
         live |= pollFields(cfg.optJSONArray("racing"), "racing", cfg.optJSONArray("drivers"), "Race");
         live |= pollFields(cfg.optJSONArray("golf"), "golf", cfg.optJSONArray("players"), "Tournament");
         return live;
+    }
+
+    private final Map<String, Long> officialDownUntil = new HashMap<>();
+
+    /** Alerts for one game from a fresh snapshot (source-independent). */
+    private void evaluate(String league, String id, String awayCode, String homeCode, Snap cur, String detail) {
+        String key = "g:" + league + ":" + id;
+        Snap p = prev.get(key);
+        prev.put(key, cur);
+        if (p == null) return; // first sighting is a baseline, not news
+
+        String line = awayCode + " " + cur.away + " - " + cur.home + " " + homeCode;
+        String tag = league.toUpperCase();
+        if (!"post".equals(p.state) && "post".equals(cur.state)) {
+            alert("🏁 Final · " + tag, line);
+        } else if ("pre".equals(p.state) && "in".equals(cur.state)) {
+            alert("▶ " + tag + ": game started", awayCode + " at " + homeCode);
+        } else if (!"pre".equals(cur.state) && (cur.away != p.away || cur.home != p.home)) {
+            String scorer = cur.away > p.away ? awayCode : cur.home > p.home ? homeCode : null;
+            alert((scorer != null ? "★ " + scorer + " scores" : "Score update") + " · " + tag,
+                    line + (detail.isEmpty() ? "" : " · " + detail));
+        }
+    }
+
+    private static String mapCode(String league, String code) {
+        if ("nhl".equals(league)) {
+            switch (code) {
+                case "LAK": return "LA";
+                case "NJD": return "NJ";
+                case "SJS": return "SJ";
+                case "TBL": return "TB";
+                case "UTA": return "UTAH";
+                default: return code;
+            }
+        }
+        if ("mlb".equals(league)) {
+            switch (code) {
+                case "AZ": return "ARI";
+                case "CWS": return "CHW";
+                default: return code;
+            }
+        }
+        return code;
+    }
+
+    /**
+     * Official league APIs (preferred): NHL web API and MLB Stats API. Returns whether anything
+     * is live, or null when the league has no official feed here. Throws on failure so the
+     * caller can fall back to ESPN.
+     */
+    private Boolean pollOfficial(String league, Set<String> codes) throws Exception {
+        boolean live = false;
+        if ("nhl".equals(league)) {
+            JSONArray games = fetch("https://api-web.nhle.com/v1/score/now").optJSONArray("games");
+            if (games == null) return false;
+            for (int i = 0; i < games.length(); i++) {
+                JSONObject g = games.getJSONObject(i);
+                JSONObject at = g.getJSONObject("awayTeam");
+                JSONObject ht = g.getJSONObject("homeTeam");
+                String awayCode = mapCode(league, at.optString("abbrev"));
+                String homeCode = mapCode(league, ht.optString("abbrev"));
+                if (!codes.contains(awayCode) && !codes.contains(homeCode)) continue;
+                String gs = g.optString("gameState");
+                String state = ("LIVE".equals(gs) || "CRIT".equals(gs)) ? "in"
+                        : ("OFF".equals(gs) || "FINAL".equals(gs)) ? "post" : "pre";
+                if ("in".equals(state)) live = true;
+                Snap cur = new Snap();
+                cur.state = state;
+                cur.away = at.optInt("score", 0);
+                cur.home = ht.optInt("score", 0);
+                JSONObject pd = g.optJSONObject("periodDescriptor");
+                String detail = pd != null ? "P" + pd.optInt("number") : "";
+                evaluate(league, String.valueOf(g.optLong("id")), awayCode, homeCode, cur, detail);
+            }
+            return live;
+        }
+        if ("mlb".equals(league)) {
+            JSONArray dates = fetch("https://statsapi.mlb.com/api/v1/schedule?sportId=1&hydrate=linescore,team").optJSONArray("dates");
+            if (dates == null) return false;
+            for (int d = 0; d < dates.length(); d++) {
+                JSONArray games = dates.getJSONObject(d).optJSONArray("games");
+                if (games == null) continue;
+                for (int i = 0; i < games.length(); i++) {
+                    JSONObject g = games.getJSONObject(i);
+                    JSONObject teams = g.getJSONObject("teams");
+                    JSONObject at = teams.getJSONObject("away");
+                    JSONObject ht = teams.getJSONObject("home");
+                    String awayCode = mapCode(league, at.getJSONObject("team").optString("abbreviation"));
+                    String homeCode = mapCode(league, ht.getJSONObject("team").optString("abbreviation"));
+                    if (!codes.contains(awayCode) && !codes.contains(homeCode)) continue;
+                    String abs = g.getJSONObject("status").optString("abstractGameState");
+                    String state = "Live".equals(abs) ? "in" : "Final".equals(abs) ? "post" : "pre";
+                    if ("in".equals(state)) live = true;
+                    Snap cur = new Snap();
+                    cur.state = state;
+                    cur.away = at.optInt("score", 0);
+                    cur.home = ht.optInt("score", 0);
+                    JSONObject ls = g.optJSONObject("linescore");
+                    String detail = ls != null
+                            ? (ls.optString("inningState") + " " + ls.optString("currentInningOrdinal")).trim() : "";
+                    evaluate(league, String.valueOf(g.optLong("gamePk")), awayCode, homeCode, cur, detail);
+                }
+            }
+            return live;
+        }
+        return null;
     }
 
     private boolean pollTeams(String url, String league, Set<String> codes) throws Exception {
@@ -167,24 +284,9 @@ public class WatcherService extends Service {
             cur.away = toInt(away.optString("score"));
             cur.home = toInt(home.optString("score"));
 
-            String key = "g:" + league + ":" + evt.optString("id");
-            Snap p = prev.get(key);
-            prev.put(key, cur);
-            if (p == null) continue; // first sighting is a baseline, not news
-
-            String line = awayCode + " " + cur.away + " - " + cur.home + " " + homeCode;
-            String tag = league.toUpperCase();
-            if (!"post".equals(p.state) && "post".equals(cur.state)) {
-                alert("🏁 Final · " + tag, line);
-            } else if ("pre".equals(p.state) && "in".equals(cur.state)) {
-                alert("▶ " + tag + ": game started", awayCode + " at " + homeCode);
-            } else if (!"pre".equals(cur.state) && (cur.away != p.away || cur.home != p.home)) {
-                String scorer = cur.away > p.away ? awayCode : cur.home > p.home ? homeCode : null;
-                String detail = evt.optJSONObject("status") != null && evt.getJSONObject("status").optJSONObject("type") != null
-                        ? evt.getJSONObject("status").getJSONObject("type").optString("detail") : "";
-                alert((scorer != null ? "★ " + scorer + " scores" : "Score update") + " · " + tag,
-                        line + (detail.isEmpty() ? "" : " · " + detail));
-            }
+            String detail = evt.optJSONObject("status") != null && evt.getJSONObject("status").optJSONObject("type") != null
+                    ? evt.getJSONObject("status").getJSONObject("type").optString("detail") : "";
+            evaluate(league, evt.optString("id"), awayCode, homeCode, cur, detail);
         }
         return live;
     }

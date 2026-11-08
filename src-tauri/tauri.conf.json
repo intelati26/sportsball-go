@@ -15,7 +15,7 @@
       { "label": "main", "title": "Sportsball Go", "width": 1200, "height": 800, "minWidth": 420, "minHeight": 600 }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; connect-src 'self' https://site.api.espn.com"
+      "csp": "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; connect-src 'self' https://site.api.espn.com https://statsapi.mlb.com https://api-web.nhle.com"
     }
   },
   "bundle": {

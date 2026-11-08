@@ -1,6 +1,6 @@
 # Sportsball Go
 
-Live sports scoreboard + ticker (NFL & college football via ESPN's public scoreboard feed; MLB/NASCAR placeholders).
+Live sports scoreboard + ticker. Data comes from the official league API where one is available (MLB Stats API, NHL web API); ESPN's public scoreboard feed is the backup, used automatically when an official feed fails and for leagues without an open official API.
 One React/Vite codebase, three targets:
 
 | Target | Tech | Output |

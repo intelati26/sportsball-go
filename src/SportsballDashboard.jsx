@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Capacitor, registerPlugin } from '@capacitor/core';
+import { gameProgress } from './progress.js';
+import { OFFICIAL_SOURCES } from './officialApis.js';
 
 /**
  * SPORTSBALL DASHBOARD v2
@@ -414,6 +416,62 @@ export const TEAM_FEEDS = {
 // Shown on by default; the rest are one tap away in the plugin manager.
 const DEFAULT_PLUGINS = ['nfl', 'cfb', 'ncaab', 'nba', 'nhl', 'nascar', 'nascar-oreilly', 'nascar-truck'];
 
+const OFFICIAL_RETRY_MS = 5 * 60000;
+const officialDownUntil = {};
+
+// ESPN scoreboard (backup source) for team-vs-team feeds.
+async function fetchEspnTeamGames(feed, date) {
+  const host = ['site', 'api', 'espn', 'com'].join('.');
+  const params = [feed.query, date ? `dates=${date.replace(/-/g, '')}` : ''].filter(Boolean).join('&');
+  const url = `https://${host}/apis/site/v2/sports/${feed.sport}/${feed.league}/scoreboard${params ? `?${params}` : ''}`;
+  const res = await fetch(url);
+  if (!res.ok) throw httpError(res);
+  const data = await res.json();
+  return (data.events || []).map((evt) => {
+    const comp = evt.competitions?.[0] || {};
+    const statusType = evt.status?.type || {};
+    const competitors = comp.competitors || [];
+    const side = (ha) => {
+      const c = competitors.find((x) => x.homeAway === ha) || {};
+      return {
+        code: c.team?.abbreviation || ha.toUpperCase(),
+        name: c.team?.displayName || ha,
+        logo: c.team?.logo,
+        score: c.score || 0,
+        linescores: (c.linescores || []).map((l) => l.displayValue ?? l.value),
+      };
+    };
+    const away = side('away');
+    const home = side('home');
+    const isLive = statusType.state === 'in';
+    return {
+      id: evt.id,
+      source: 'espn',
+      sportSlug: feed.sport,
+      leagueSlug: feed.league,
+      regPeriods: feed.regPeriods,
+      league: feed.tag,
+      title: evt.name,
+      status: isLive ? 'LIVE' : statusType.state === 'post' ? 'FINAL' : 'PREGAME',
+      summary: {
+        primaryLabel: statusType.detail || 'Scheduled',
+        secondaryLabel: '',
+        scoreOrLeader: `${away.code} ${away.score} - ${home.score} ${home.code}`,
+      },
+      progress: gameProgress({
+        state: statusType.state,
+        period: evt.status?.period,
+        clock: evt.status?.displayClock,
+        regPeriods: feed.regPeriods,
+        periodMins: periodMinutesFor(feed),
+        countsUp: feed.sport === 'soccer',
+      }),
+      details: {},
+      teams: { away, home },
+    };
+  });
+}
+
 export function useTeamScoreboard(feedId, pollIntervalMs = 10000, date = '', enabled = true) {
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -427,55 +485,20 @@ export function useTeamScoreboard(feedId, pollIntervalMs = 10000, date = '', ena
     setGames([]);
     const fetchScores = async () => {
       try {
-        const host = ['site', 'api', 'espn', 'com'].join('.');
-        const params = [feed.query, date ? `dates=${date.replace(/-/g, '')}` : ''].filter(Boolean).join('&');
-        const url = `https://${host}/apis/site/v2/sports/${feed.sport}/${feed.league}/scoreboard${params ? `?${params}` : ''}`;
-        const res = await fetch(url);
-        if (!res.ok) throw httpError(res);
-        const data = await res.json();
-
-        const normalized = (data.events || []).map((evt) => {
-          const comp = evt.competitions?.[0] || {};
-          const statusType = evt.status?.type || {};
-          const competitors = comp.competitors || [];
-          const side = (ha) => {
-            const c = competitors.find((x) => x.homeAway === ha) || {};
-            return {
-              code: c.team?.abbreviation || ha.toUpperCase(),
-              name: c.team?.displayName || ha,
-              logo: c.team?.logo,
-              score: c.score || 0,
-              linescores: (c.linescores || []).map((l) => l.displayValue ?? l.value),
-            };
-          };
-          const away = side('away');
-          const home = side('home');
-          const isLive = statusType.state === 'in';
-          return {
-            id: evt.id,
-            sportSlug: feed.sport,
-            leagueSlug: feed.league,
-            regPeriods: feed.regPeriods,
-            league: feed.tag,
-            title: evt.name,
-            status: isLive ? 'LIVE' : statusType.state === 'post' ? 'FINAL' : 'PREGAME',
-            summary: {
-              primaryLabel: statusType.detail || 'Scheduled',
-              secondaryLabel: '',
-              scoreOrLeader: `${away.code} ${away.score} - ${home.score} ${home.code}`,
-            },
-            progress: gameProgress({
-              state: statusType.state,
-              period: evt.status?.period,
-              clock: evt.status?.displayClock,
-              regPeriods: feed.regPeriods,
-              periodMins: periodMinutesFor(feed),
-              countsUp: feed.sport === 'soccer',
-            }),
-            details: {},
-            teams: { away, home },
-          };
-        });
+        // Official league API first; ESPN is only the backup (on any error from the official feed).
+        const official = OFFICIAL_SOURCES[feedId];
+        let normalized = null;
+        if (official && Date.now() >= (officialDownUntil[feedId] || 0)) {
+          try {
+            normalized = await official.fetch(feed, date);
+            officialDownUntil[feedId] = 0;
+          } catch (e) {
+            // Back off the official feed for a while so a blocked/down API isn't hit every poll.
+            officialDownUntil[feedId] = Date.now() + OFFICIAL_RETRY_MS;
+            normalized = null; // fall through to ESPN
+          }
+        }
+        if (!normalized) normalized = await fetchEspnTeamGames(feed, date);
 
         if (isMounted) {
           setGames(normalized);
@@ -655,29 +678,7 @@ export function GolfCard({ event, tourId = 'pga', favorites = [], onToggleFavori
 }
 
 // ---- How far through a game is (0..1), so the ticker can lead with games about to finish ----
-const parseClockSeconds = (clock) => {
-  if (!clock) return null;
-  const c = String(clock);
-  const mmss = c.match(/^(\d+):(\d+)/);
-  if (mmss) return Number(mmss[1]) * 60 + Number(mmss[2]);
-  const mins = c.match(/^(\d+)/); // soccer "67'" or hockey/basketball "12.3"
-  if (mins) return Number(c.replace(/[^0-9.]/g, '')) * (c.includes("'") ? 60 : 1);
-  return null;
-};
-
-export function gameProgress({ state, period = 0, clock, regPeriods, periodMins, countsUp = false }) {
-  if (state === 'post') return 1;
-  if (state !== 'in') return 0;
-  if (!regPeriods || !period) return 0.5;
-  if (period > regPeriods) return 0.99; // overtime / extras: as late as it gets
-  const secs = parseClockSeconds(clock);
-  const hasClock = Boolean(periodMins) && secs !== null;
-  // Soccer's clock runs the whole match (e.g. 67'): progress is minutes over regulation.
-  if (countsUp && hasClock) return Math.min(0.98, secs / (periodMins * regPeriods * 60));
-  // Otherwise the clock counts down within a period; with no clock (innings, sets) assume mid-period.
-  const within = hasClock ? 1 - Math.min(1, secs / (periodMins * 60)) : 0.5;
-  return Math.min(0.98, (period - 1 + within) / regPeriods);
-}
+export { gameProgress };
 
 const periodMinutesFor = (feed) =>
   ({ hockey: 20, soccer: 45, football: 15, lacrosse: 15 })[feed.sport] ??
@@ -969,7 +970,7 @@ function useGameSummary(game, enabled) {
 }
 
 export function BoxScore({ game }) {
-  const { loading, error, data } = useGameSummary(game, true);
+  const { loading, error, data } = useGameSummary(game, game.source !== 'official');
   const { away, home } = gameTeams(game);
   const periods = Math.max(away?.linescores?.length || 0, home?.linescores?.length || 0);
 
