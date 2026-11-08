@@ -16,7 +16,22 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // One fixed signing key for every sideloaded build. CI runners otherwise generate a new
+    // random debug key each run, so each APK has a different signer: Play Protect treats it as an
+    // unknown developer and an update over an earlier install fails on the signature mismatch.
+    // This is a convenience key for sideloading, not a secret and not for Google Play.
+    signingConfigs {
+        sideload {
+            storeFile file('sportsballgo-debug.jks')
+            storePassword 'android'
+            keyAlias 'sportsballgo'
+            keyPassword 'android'
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.sideload
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
