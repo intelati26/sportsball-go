@@ -11,6 +11,9 @@ export const OFFICIAL_SOURCES = {
   nhl: { name: 'NHL Web API', fetch: fetchNhl },
 };
 
+// Set from the Settings page: false = ESPN only.
+export const dataPrefs = { officialFirst: true };
+
 export const hasOfficialSource = (feedId) => Boolean(OFFICIAL_SOURCES[feedId]);
 
 // official abbreviation -> ESPN abbreviation (only where they differ)

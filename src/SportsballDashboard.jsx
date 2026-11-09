@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { gameProgress } from './progress.js';
-import { OFFICIAL_SOURCES, fetchNascarLive } from './officialApis.js';
-import { SPORT_SORTS, GAME_SORTS, RANGES, sortGames, orderSections, isToday } from './sorting.js';
+import { OFFICIAL_SOURCES, fetchNascarLive, dataPrefs } from './officialApis.js';
+import SettingsPanel from './Settings.jsx';
+import { useSettings, useCollapsed } from './settings.js';
+import { RANGES, sortGames, orderSections, isToday } from './sorting.js';
 
 /**
  * SPORTSBALL DASHBOARD v2
@@ -211,7 +213,7 @@ export function useNascarSeries(seriesId = 'nascar', pollIntervalMs = 15000, dat
     const fetchRaces = async () => {
       try {
         // Today's board: the official NASCAR live feed wins while a race is running.
-        if (!date && Date.now() >= (officialDownUntil[`race:${seriesId}`] || 0)) {
+        if (!date && dataPrefs.officialFirst && Date.now() >= (officialDownUntil[`race:${seriesId}`] || 0)) {
           try {
             const live = await fetchNascarLive(seriesId);
             if (live) {
@@ -508,7 +510,7 @@ export function useTeamScoreboard(feedId, pollIntervalMs = 10000, date = '', ena
         // Official league API first; ESPN is only the backup (on any error from the official feed).
         const official = OFFICIAL_SOURCES[feedId];
         let normalized = null;
-        if (official && Date.now() >= (officialDownUntil[feedId] || 0)) {
+        if (official && dataPrefs.officialFirst && Date.now() >= (officialDownUntil[feedId] || 0)) {
           try {
             normalized = await official.fetch(feed, date);
             officialDownUntil[feedId] = 0;
@@ -1153,7 +1155,7 @@ export function FootballCard({ game, favorites = [], onToggleFavorite }) {
   );
 }
 
-const AVAILABLE_PLUGINS = [
+export const AVAILABLE_PLUGINS = [
   { id: 'nfl', name: 'NFL Football', category: 'Gridiron', desc: 'Live scores, clock & down/distance' },
   { id: 'cfb', name: 'College Football (CFB)', category: 'Gridiron', desc: 'AP Top 25 & FBS games' },
   ...Object.entries(TEAM_FEEDS).map(([id, f]) => ({
@@ -1176,95 +1178,11 @@ const AVAILABLE_PLUGINS = [
   })),
 ];
 
-export function PluginModal({ isOpen, onClose, activePlugins, onTogglePlugin }) {
-  if (!isOpen) return null;
-
-  return (
-    <div style={styles.modalOverlay}>
-      <div style={styles.modalContent}>
-        <div style={styles.modalHeader}>
-          <h3 style={{ margin: 0 }}>🧩 Manage Sportsball Plugins</h3>
-          <button style={styles.closeBtn} onClick={onClose}>✕</button>
-        </div>
-        <div style={styles.pluginList}>
-          {AVAILABLE_PLUGINS.map((p) => {
-            const isEnabled = activePlugins.includes(p.id);
-            return (
-              <div key={p.id} style={styles.pluginRow}>
-                <div>
-                  <div style={styles.pluginTitle}>{p.name} <span style={styles.categoryBadge}>{p.category}</span></div>
-                  <div style={styles.pluginDesc}>{p.desc}</div>
-                </div>
-                <button
-                  style={{
-                    ...styles.toggleBtn,
-                    backgroundColor: isEnabled ? '#38a169' : '#4a5568'
-                  }}
-                  onClick={() => onTogglePlugin(p.id)}
-                >
-                  {isEnabled ? 'Enabled' : 'Disabled'}
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// A remembered choice from a fixed list of ids (localStorage may be unavailable).
-function usePref(key, fallback, allowed) {
-  const [value, setValue] = useState(() => {
-    try {
-      const v = localStorage.getItem(key);
-      return allowed.includes(v) ? v : fallback;
-    } catch {
-      return fallback;
-    }
-  });
-  const set = (v) => {
-    setValue(v);
-    try {
-      localStorage.setItem(key, v);
-    } catch {
-      /* storage unavailable: the choice lasts for this session only */
-    }
-  };
-  return [value, set];
-}
-
-// Which sport sections are folded up (remembered).
-function useCollapsed() {
-  const KEY = 'sportsball.collapsed';
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      const v = JSON.parse(localStorage.getItem(KEY) || '[]');
-      return Array.isArray(v) ? v : [];
-    } catch {
-      return [];
-    }
-  });
-  const save = (list) => {
-    setCollapsed(list);
-    try {
-      localStorage.setItem(KEY, JSON.stringify(list));
-    } catch {
-      /* storage unavailable: lasts for this session only */
-    }
-  };
-  return {
-    collapsed,
-    isCollapsed: (id) => collapsed.includes(id),
-    toggle: (id) => save(collapsed.includes(id) ? collapsed.filter((x) => x !== id) : [...collapsed, id]),
-    expand: (id) => collapsed.includes(id) && save(collapsed.filter((x) => x !== id)),
-    setAll: (ids) => save(ids),
-  };
-}
-
 export default function SportsballDashboard() {
-  const [activePlugins, setActivePlugins] = useState(DEFAULT_PLUGINS);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const { settings, update, togglePlugin, setPlugins, reset } = useSettings(DEFAULT_PLUGINS);
+  const activePlugins = settings.plugins;
+  dataPrefs.officialFirst = settings.officialFirst;
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const { favorites, toggleFavorite, nativeReady, watcherOn, toggleWatcher } = useFavorites();
   const [selectedDate, setSelectedDate] = useState(''); // '' = today / live
@@ -1305,10 +1223,8 @@ export default function SportsballDashboard() {
   ];
 
   // ---- Sorting: which sports lead, and how games order inside each sport ----
-  const [sportSort, setSportSort] = usePref('sportsball.sportSort', 'default', SPORT_SORTS.map((x) => x.id));
-  const [gameSort, setGameSort] = usePref('sportsball.gameSort', 'fav', GAME_SORTS.map((x) => x.id));
+  const { sportSort, gameSort, range } = settings;
   // Week overview is the default view; today-only narrows to today's games (and anything live).
-  const [range, setRange] = usePref('sportsball.range', 'week', RANGES.map((x) => x.id));
   const todayOnly = range === 'today' && !isHistory;
   const inRange = (list) => (todayOnly ? list.filter((g) => isToday(g)) : list);
   const isFav = (g) => isFavoriteGame(g, favorites);
@@ -1341,8 +1257,7 @@ export default function SportsballDashboard() {
 
   // Collapse a sport, or show only what is live right now.
   const fold = useCollapsed();
-  const [activeOnlyPref, setActiveOnlyPref] = usePref('sportsball.activeOnly', 'off', ['on', 'off']);
-  const activeOnly = activeOnlyPref === 'on' && !isHistory; // nothing is live on a past date
+  const activeOnly = settings.activeOnly && !isHistory; // nothing is live on a past date
   const liveCount = (id) => (sectionItems[id] || []).filter((x) => x.status === 'LIVE').length;
   const showSection = (id) => activePlugins.includes(id) && (!activeOnly || liveCount(id) > 0);
   const onlyLive = (list, statusOf = (x) => x.status) => {
@@ -1436,11 +1351,6 @@ export default function SportsballDashboard() {
     setTimeout(() => document.getElementById(`section-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
   };
 
-  const togglePlugin = (id) => {
-    setActivePlugins((prev) =>
-      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]
-    );
-  };
 
   return (
     <div style={styles.container}>
@@ -1469,64 +1379,33 @@ export default function SportsballDashboard() {
             </button>
           )}
         </div>
-        <button
-          style={{ ...styles.todayBtn, backgroundColor: alertsOn ? '#2f855a' : '#334155', marginRight: '12px' }}
-          onClick={toggleAlerts}
-          aria-pressed={alertsOn}
-          title="Alerts for pinned teams, drivers and players: scores, starts and finals"
-        >
-          🔔 Alerts {alertsOn ? 'on' : 'off'}
-        </button>
-        {nativeWatcher && (
-          <button
-            style={{ ...styles.todayBtn, backgroundColor: watcherOn ? '#2f855a' : '#334155', marginRight: '12px' }}
-            onClick={toggleWatcher}
-            aria-pressed={watcherOn}
-            title="Keep watching your pins with the app closed (shows a persistent notification)"
-          >
-            📡 Background {watcherOn ? 'on' : 'off'}
-          </button>
-        )}
-        <button style={styles.pluginMgrBtn} onClick={() => setIsModalOpen(true)}>
-          ⚙️ Manage Plugins ({activePlugins.length})
+        <button style={styles.pluginMgrBtn} onClick={() => setSettingsOpen(true)} aria-label="Open settings">
+          ⚙️ Settings
         </button>
       </header>
 
       <div style={styles.sortBar}>
-        <select
-          style={styles.sortSelect}
-          value={range}
-          onChange={(e) => setRange(e.target.value)}
-          aria-label="Date range"
-          disabled={isHistory}
-        >
-          {RANGES.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-        </select>
-        <select
-          style={styles.sortSelect}
-          value={sportSort}
-          onChange={(e) => setSportSort(e.target.value)}
-          aria-label="Sport order"
-          disabled={isHistory}
-        >
-          {SPORT_SORTS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-        </select>
-        <select
-          style={styles.sortSelect}
-          value={gameSort}
-          onChange={(e) => setGameSort(e.target.value)}
-          aria-label="Game order within each sport"
-        >
-          {GAME_SORTS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-        </select>
+        <div style={styles.segment} role="group" aria-label="View">
+          {RANGES.map((o) => (
+            <button
+              key={o.id}
+              style={{ ...styles.segBtn, ...(range === o.id && !isHistory ? styles.segOn : {}) }}
+              onClick={() => update({ range: o.id })}
+              aria-pressed={range === o.id}
+              disabled={isHistory}
+            >
+              {o.id === 'week' ? 'Week' : 'Today'}
+            </button>
+          ))}
+        </div>
         <button
           style={{ ...styles.sortSelect, cursor: 'pointer', backgroundColor: activeOnly ? '#2f855a' : '#1e293b' }}
-          onClick={() => setActiveOnlyPref(activeOnlyPref === 'on' ? 'off' : 'on')}
+          onClick={() => update({ activeOnly: !settings.activeOnly })}
           aria-pressed={activeOnly}
           disabled={isHistory}
           title="Hide finished and upcoming games; sports with nothing live are hidden"
         >
-          🔴 Active only {activeOnly ? 'on' : 'off'}
+          🔴 Active only
         </button>
         <button
           style={{ ...styles.sortSelect, cursor: 'pointer' }}
@@ -1654,11 +1533,17 @@ export default function SportsballDashboard() {
         ))}
       </div>
 
-      <PluginModal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        activePlugins={activePlugins}
-        onTogglePlugin={togglePlugin}
+      <SettingsPanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        plugins={AVAILABLE_PLUGINS}
+        settings={settings}
+        update={update}
+        togglePlugin={togglePlugin}
+        setPlugins={setPlugins}
+        alerts={{ on: alertsOn, toggle: toggleAlerts }}
+        watcher={nativeWatcher ? { on: watcherOn, toggle: toggleWatcher } : null}
+        onReset={reset}
       />
     </div>
   );
@@ -1700,6 +1585,9 @@ const styles = {
   pluginMgrBtn: { backgroundColor: '#334155', color: '#fff', border: 'none', padding: '10px 16px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600' },
   mainGrid: { padding: '32px', display: 'flex', flexDirection: 'column', gap: '32px' },
   sortBar: { display: 'flex', gap: '8px', flexWrap: 'wrap', padding: '10px 32px 0' },
+  segment: { display: 'inline-flex', border: '1px solid #334155', borderRadius: '8px', overflow: 'hidden' },
+  segBtn: { backgroundColor: '#1e293b', color: '#cbd5e1', border: 'none', padding: '6px 12px', fontSize: '12px', fontWeight: '600', cursor: 'pointer' },
+  segOn: { backgroundColor: '#2563eb', color: '#fff' },
   sortSelect: { backgroundColor: '#1e293b', color: '#f8fafc', border: '1px solid #334155', borderRadius: '8px', padding: '6px 10px', fontSize: '12px', fontWeight: '600' },
   skipNav: { position: 'sticky', top: 0, zIndex: 50, display: 'flex', gap: '8px', overflowX: 'auto', padding: '10px 32px', backgroundColor: '#0f172a', borderBottom: '1px solid #1e293b' },
   skipBtn: { flex: '0 0 auto', backgroundColor: '#1e293b', color: '#cbd5e1', border: '1px solid #334155', borderRadius: '999px', padding: '6px 12px', cursor: 'pointer', fontSize: '12px', fontWeight: '600', whiteSpace: 'nowrap' },
@@ -1722,14 +1610,5 @@ const styles = {
   logoPlaceholder: { width: '28px', height: '28px', backgroundColor: '#334155', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' },
   situationBox: { backgroundColor: '#0f172a', padding: '8px 12px', borderRadius: '6px', fontSize: '12px', color: '#cbd5e1', textAlign: 'center' },
   emptyCard: { backgroundColor: '#1e293b', color: '#94a3b8', borderRadius: '12px', padding: '24px', textAlign: 'center', border: '1px dashed #334155' },
-  modalOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
-  modalContent: { backgroundColor: '#1e293b', borderRadius: '16px', padding: '24px', width: '480px', maxWidth: '90vw' },
-  modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' },
-  closeBtn: { background: 'none', border: 'none', color: '#94a3b8', fontSize: '20px', cursor: 'pointer' },
-  pluginList: { display: 'flex', flexDirection: 'column', gap: '16px', maxHeight: '60vh', overflowY: 'auto' },
-  pluginRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0f172a', padding: '12px 16px', borderRadius: '8px' },
-  pluginTitle: { fontWeight: 'bold', fontSize: '14px' },
-  categoryBadge: { fontSize: '10px', backgroundColor: '#334155', color: '#cbd5e1', padding: '2px 6px', borderRadius: '4px', marginLeft: '6px' },
   pluginDesc: { fontSize: '12px', color: '#94a3b8', marginTop: '2px' },
-  toggleBtn: { border: 'none', color: '#fff', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' },
 };
